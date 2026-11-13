@@ -1,0 +1,5 @@
+/.build/
+/bin/
+.env
+.env.local
+/.idea/
