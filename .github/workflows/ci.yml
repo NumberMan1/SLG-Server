@@ -1,0 +1,56 @@
+name: Server CI
+
+on:
+  push:
+    branches: [develop, master]
+  pull_request:
+    branches: [develop, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: server-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    if: github.actor != 'dependabot[bot]' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      GOPRIVATE: github.com/NumberMan1/orbit
+      GOTOOLCHAIN: local
+      GOFLAGS: -mod=readonly
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Download and verify Go modules
+        env:
+          ORBIT_READ_TOKEN: ${{ secrets.ORBIT_READ_TOKEN }}
+        run: |
+          if [ -z "$ORBIT_READ_TOKEN" ]; then
+            echo "::error::Set the ORBIT_READ_TOKEN Actions secret with read access to NumberMan1/orbit."
+            exit 1
+          fi
+          authorization=$(printf 'x-access-token:%s' "$ORBIT_READ_TOKEN" | base64 -w0)
+          echo "::add-mask::$authorization"
+          GIT_CONFIG_COUNT=1 \
+            GIT_CONFIG_KEY_0=http.https://github.com/NumberMan1/orbit.extraheader \
+            GIT_CONFIG_VALUE_0="Authorization: Basic $authorization" \
+            go mod download
+          go mod verify
+
+      - name: Test Go and build and test C++20
+        run: sh scripts/verify.sh
+
+      - name: Build Go services
+        run: go build ./cmd/...

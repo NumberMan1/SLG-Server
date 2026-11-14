@@ -2,32 +2,33 @@ package httpserver
 
 import (
 	"context"
-	"log"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
+	serverlog "github.com/NumberMan1/log"
+	"github.com/NumberMan1/log/field"
 	"github.com/NumberMan1/orbit"
 	"github.com/NumberMan1/orbit/service"
 	orbithttp "github.com/NumberMan1/orbit/socket/http"
 )
 
-type namedServer struct {
+type loggedServer struct {
 	*orbithttp.Server
-	name string
+	logger serverlog.Logger
 }
 
-func (s namedServer) Start(ctx context.Context) error {
+func (s loggedServer) Start(ctx context.Context) error {
 	if err := s.Server.Start(ctx); err != nil {
 		return err
 	}
-	log.Printf("%s listening on %s", s.name, s.Addr())
+	s.logger.Info("HTTP server listening", field.String("address", s.Addr().String()))
 	return nil
 }
 
-func Run(name string, server *orbithttp.Server, dependencies ...orbit.Component) error {
-	components := append(dependencies, namedServer{Server: server, name: name})
+func Run(logger serverlog.Logger, server *orbithttp.Server, dependencies ...orbit.Component) error {
+	components := append(dependencies, loggedServer{Server: server, logger: logger})
 	app, err := service.NewApp(5*time.Second, components...)
 	if err != nil {
 		return err

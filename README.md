@@ -7,6 +7,7 @@
 | `cmd/gateway`、`cmd/game-server` | Go 进程入口与启动配置 |
 | `internal/gateway`、`internal/gameserver` | 网关路由与游戏服 HTTP 接口 |
 | `infrastructure/httpserver` | Orbit 生命周期装配、进程信号和健康响应 |
+| `infrastructure/logging` | NumberMan1/log 进程日志初始化和关闭 |
 | `battle-server` | C++ 战斗服可执行目标与 CTest 冒烟用例 |
 | [database](database/README.md) | MySQL 建表与数据迁移 SQL |
 | `testkit` | 通过真实 HTTP 连接装配 Go 网关与游戏服 |
@@ -21,7 +22,7 @@
 
 联调需要 Podman、Go 1.27.2、`curl` 和 POSIX `sh`。Windows 可使用 Git Bash，并先启动自己的 Podman 虚拟机。脚本用宿主机 Go 工具链编译 Linux 网关和游戏服，再用 Podman 构建镜像。
 
-Orbit 和 Numbox 通过 Go Modules 下载，版本和校验和固定在 `go.mod` 与 `go.sum`。服务端模块路径为 `github.com/NumberMan1/slg-server`。
+Orbit、Numbox 和 NumberMan1/log 通过 Go Modules 下载，版本和校验和固定在 `go.mod` 与 `go.sum`。服务端模块路径为 `github.com/NumberMan1/slg-server`。
 
 当前 Orbit 需要 GitHub 仓库读取权限。新机器上先配置 GitHub 的 Git 凭据，再将 Orbit 加入 `GOPRIVATE`。如果已配置其他私有模块，请保留原有条目并以逗号追加。
 
@@ -58,6 +59,8 @@ sh scripts/dev.sh down
 
 登录联调使用网关和游戏服，账号和一次性票据保存在网关内存中。C++20 战斗服目前用 CMake 和 CTest 验证启动。
 
+Go 网关和游戏服通过 NumberMan1/log 把结构化 JSON 写到标准输出，日志用 `service` 标识进程。Podman 联调时可用 `podman logs slg-dev-gateway` 或 `podman logs slg-dev-game-server` 查看。
+
 ## 在 VS Code 中调试
 
 在服务端仓库根目录运行 `code .`，安装 Go 和 C/C++ 扩展。以下调试选项来自本机的 `.vscode/`，该目录由 Git 忽略。首次调试 Go 时，可运行 **Go: Install/Update Tools** 安装 `dlv`。从已设置 `GOPRIVATE` 的终端启动 VS Code，让扩展和任务一并使用该设置。网关调试从 `.env` 读取演示账号和密码。
@@ -84,3 +87,9 @@ ctest --test-dir .build/battle -C Debug --output-on-failure
 ```
 
 Ninja 单配置构建在 Windows 上可运行 `./.build/battle/battle-server.exe --healthcheck`。多配置生成器将可执行文件放在对应配置目录中。
+
+## GitHub Actions
+
+Server CI 在 `develop`、`master` 的推送和目标为这两个分支的同仓 PR 上运行，也支持手动运行。它按 `go.mod` 安装 Go，下载并校验依赖，执行 `sh scripts/verify.sh`，再构建两个 Go 进程。HTTP 登录、TCP 认证和游戏服健康检查由现有集成用例覆盖，使用 runner 的回环端口。
+
+在 SLG-Server 的 **Settings → Secrets and variables → Actions** 添加 `ORBIT_READ_TOKEN`。使用仅对 `NumberMan1/orbit` 有 **Contents: Read-only** 权限的细粒度 GitHub token。来自 fork 或 Dependabot 的 PR 跳过该任务。[GitHub 凭据配置](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens)
