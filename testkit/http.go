@@ -8,8 +8,8 @@ import (
 
 	orbithttp "github.com/NumberMan1/orbit/socket/http"
 
-	"slg/server/internal/gameserver"
-	"slg/server/internal/gateway"
+	"github.com/NumberMan1/slg-server/internal/gameserver"
+	"github.com/NumberMan1/slg-server/internal/gateway"
 )
 
 type HTTPStack struct {

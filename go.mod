@@ -1,10 +1,11 @@
-module slg/server
+module github.com/NumberMan1/slg-server
 
 go 1.27.2
 
 require (
 	github.com/NumberMan1/numbox v0.4.2
-	github.com/NumberMan1/orbit v0.0.0-20261018150141-585b92c078d2
+	github.com/NumberMan1/orbit v0.1.0
+	google.golang.org/protobuf v1.36.9
 )
 
 require (
@@ -13,7 +14,3 @@ require (
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.41.0 // indirect
 )
-
-replace github.com/NumberMan1/orbit => D:/go/src/github.com/NumberMan1/orbit
-
-replace github.com/NumberMan1/numbox => D:/go/src/github.com/NumberMan1/numbox

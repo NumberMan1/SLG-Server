@@ -1,0 +1,3 @@
+FROM scratch
+COPY --chmod=0555 gateway game-server /slg/
+USER 65532:65532

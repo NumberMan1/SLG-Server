@@ -3,14 +3,14 @@
 ## 服务边界
 
 - **Go 运行时**由 Orbit 的 `service.App` 管理启动和优雅关闭，`socket/http` 提供 HTTP 服务、客户端和 JSON。Numbox 的 `utils/env` 读取启动配置。后续行军到期调度可在 Orbit 串行队列中推进 Numbox 时间轮。
-- **Go 网关**负责客户端入口。当前公开 `GET /v1/game/health`，访问游戏服 `GET /healthz`。后续接入身份校验、长连接和服务路由。
+- **Go 网关**负责客户端入口，提供 HTTP 登录、Orbit TCP 建连认证和 `GET /v1/game/health`。登录与认证在网关完成，健康检查访问游戏服 `GET /healthz`。
 - **Go 游戏服**负责地图、行军、占领和联盟状态。建议先按世界分区组织状态归属，由游戏服处理同一地块的并发占领与重复结算。
 - **C++ 战斗服**负责战斗计算。首个版本可采用无状态结算，输入部队快照、规则版本与随机种子，输出战果和战报。先通过 CTest 验证固定输入的可重放性，再接入跨语言 RPC。接口稳定后把协议源集中放到 `server/proto`。
 - **Unity 客户端**负责地图展示、指令提交与行军表现。服务端状态决定部队到达、战果及领地归属。
 
 ## 数据与组件
 
-SLG 的数据库选型取决于状态模型和读写路径。这个项目优先选 **MySQL 8.4 / InnoDB**。地块归属、联盟成员、行军状态和结算流水适合用关系表、唯一约束与事务表达。例如，先用唯一的结算 ID 去重，再在同一事务内写入结算流水和领地变更。SQL 迁移随首次持久化功能加入 `server/database`。[MySQL InnoDB 文档](https://dev.mysql.com/doc/refman/8.4/en/innodb-introduction.html)
+SLG 的数据库选型取决于状态模型和读写路径。这个项目优先选 **MySQL 8.4 / InnoDB**。地块归属、联盟成员、行军状态和结算流水适合用关系表、唯一约束与事务表达。例如，先用唯一的结算 ID 去重，再在同一事务内写入结算流水和领地变更。SQL 脚本存放在数据库目录，首个迁移随持久化功能加入。[数据库目录](../database/README.md) · [MySQL InnoDB 文档](https://dev.mysql.com/doc/refman/8.4/en/innodb-introduction.html)
 
 MongoDB 适合按单个文档整体读写的聚合，例如结构经常演进的独立战报。它也支持多文档事务，建模时应考虑文档边界与跨文档事务成本。首版战报可先用 MySQL 的 JSON 字段保存详情，再根据查询量和访问模式评估是否引入 MongoDB。[MongoDB 原子性与事务](https://www.mongodb.com/docs/manual/core/write-operations-atomicity/)
 

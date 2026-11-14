@@ -3,7 +3,7 @@ package gameserver
 import (
 	"net/http"
 
-	"slg/server/infrastructure/httpserver"
+	"github.com/NumberMan1/slg-server/infrastructure/httpserver"
 )
 
 func NewHandler() http.Handler {

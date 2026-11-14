@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"slg/server/testkit"
+	"github.com/NumberMan1/slg-server/testkit"
 )
 
 func TestGatewayHealth(t *testing.T) {

@@ -8,6 +8,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/NumberMan1/orbit"
 	"github.com/NumberMan1/orbit/service"
 	orbithttp "github.com/NumberMan1/orbit/socket/http"
 )
@@ -25,8 +26,9 @@ func (s namedServer) Start(ctx context.Context) error {
 	return nil
 }
 
-func Run(name string, server *orbithttp.Server) error {
-	app, err := service.NewApp(5*time.Second, namedServer{Server: server, name: name})
+func Run(name string, server *orbithttp.Server, dependencies ...orbit.Component) error {
+	components := append(dependencies, namedServer{Server: server, name: name})
+	app, err := service.NewApp(5*time.Second, components...)
 	if err != nil {
 		return err
 	}

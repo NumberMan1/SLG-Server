@@ -6,8 +6,8 @@ import (
 	"github.com/NumberMan1/numbox/utils/env"
 	orbithttp "github.com/NumberMan1/orbit/socket/http"
 
-	"slg/server/infrastructure/httpserver"
-	"slg/server/internal/gameserver"
+	"github.com/NumberMan1/slg-server/infrastructure/httpserver"
+	"github.com/NumberMan1/slg-server/internal/gameserver"
 )
 
 func main() {

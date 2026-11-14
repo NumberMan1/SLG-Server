@@ -1,0 +1,33 @@
+syntax = "proto3";
+
+package slg.session.v1;
+
+option go_package = "github.com/NumberMan1/slg-server/proto;sessionpb";
+option csharp_namespace = "Slg.Protocol";
+
+enum SessionMessageId {
+  SESSION_MESSAGE_ID_UNSPECIFIED = 0;
+  SESSION_MESSAGE_ID_CONNECT_REQUEST = 1;
+  SESSION_MESSAGE_ID_CONNECT_REPLY = 2;
+}
+
+// POST /v1/login, encoded as application/protobuf.
+message LoginRequest {
+  string account = 1;
+  string password = 2;
+}
+
+message LoginReply {
+  string ticket = 1;
+  uint32 tcp_port = 2;
+}
+
+message ConnectRequest {
+  string ticket = 1;
+  uint32 protocol_version = 2;
+}
+
+message ConnectReply {
+  string account = 1;
+  uint64 session_id = 2;
+}
