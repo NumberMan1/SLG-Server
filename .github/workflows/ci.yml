@@ -50,10 +50,16 @@ jobs:
           ETCD_ADVERTISE_CLIENT_URLS: http://127.0.0.1:2379
         ports:
           - 2379/tcp
-        options: >-
-          --health-cmd="/usr/local/bin/etcdctl endpoint health"
-          --health-interval=5s --health-timeout=3s --health-retries=10
     steps:
+      # The etcd image has no shell for Docker's --health-cmd.
+      - name: Wait for etcd
+        env:
+          ETCD_PORT: ${{ job.services.etcd.ports['2379'] }}
+        run: |
+          curl --fail --silent --show-error --max-time 2 \
+            --retry 15 --retry-connrefused --retry-delay 1 \
+            "http://127.0.0.1:${ETCD_PORT}/readyz"
+
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
