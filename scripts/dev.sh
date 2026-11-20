@@ -40,7 +40,7 @@ run_podman() {
     if [ -n "$connection" ]; then
         set -- --connection "$connection" "$@"
     fi
-    # Git Bash must pass etcd key prefixes and credentials literally to podman.exe.
+    # 禁止 Git Bash 转换参数，确保 etcd 键前缀和凭据按原值传给 podman.exe。
     MSYS2_ARG_CONV_EXCL='*' MSYS2_ENV_CONV_EXCL='SLG_;REDISCLI_AUTH' podman "$@"
 }
 
@@ -130,6 +130,7 @@ if [ "$action" = redis-cluster-up ]; then
         fi
     done
     if [ "$new_nodes" -eq 3 ]; then
+        # 只有全部节点尚未加入集群时才分配槽位，已有节点继续使用持久化配置。
         redis_cli slg-dev-redis-1 --cluster create slg-dev-redis-1:6379 slg-dev-redis-2:6379 slg-dev-redis-3:6379 --cluster-yes
     fi
     for name in slg-dev-redis-1 slg-dev-redis-2 slg-dev-redis-3; do
@@ -201,6 +202,7 @@ if command -v cygpath >/dev/null 2>&1; then
 fi
 run_podman build --file "$containerfile" --tag "$image" "$build_dir"
 
+# 先准备账号表及可选演示账号，再启动常驻服务。
 run_podman run --rm --network "$network" --env SLG_MYSQL_DSN "$image" /slg/login-server migrate
 if [ -n "${SLG_DEMO_PASSWORD:-}" ]; then
     export SLG_ACCOUNT=${SLG_DEMO_ACCOUNT:-demo}
@@ -209,7 +211,7 @@ if [ -n "${SLG_DEMO_PASSWORD:-}" ]; then
         --env SLG_ACCOUNT --env SLG_ACCOUNT_PASSWORD "$image" /slg/login-server create-account
 fi
 
-# The application containers reach dependencies by Podman network DNS.
+# 应用容器通过 Podman 网络 DNS 访问依赖和其他服务。
 set -- run --detach --replace --http-proxy=false --network "$network" --label "$owner_label"
 run_podman "$@" --name "$game_server" --env SLG_GAME_ADDR=0.0.0.0:8081 \
     --env "SLG_GAME_ADVERTISE_URL=http://$game_server:8081" \
@@ -229,6 +231,7 @@ run_podman "$@" --name "$gateway" \
     --env SLG_ETCD_ENDPOINTS --env "SLG_ETCD_PREFIX=$SLG_ETCD_PREFIX" --env SLG_ETCD_USERNAME --env SLG_ETCD_PASSWORD \
     "$image" /slg/gateway
 
+# 从宿主机确认网关已经能分别路由到游戏服和登录服。
 url="http://127.0.0.1:$http_port"
 attempt=0
 while [ "$attempt" -lt 20 ]; do

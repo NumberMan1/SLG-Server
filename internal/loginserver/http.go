@@ -1,3 +1,4 @@
+// Package loginserver 校验账号凭据并签发一次性登录票据。
 package loginserver
 
 import (
@@ -25,6 +26,7 @@ type ticketIssuer interface {
 	Issue(ctx context.Context, account string) (string, error)
 }
 
+// NewHandler 提供内部登录和健康检查接口。登录成功后签发票据，供网关认证长连接。
 func NewHandler(accounts authenticator, tickets ticketIssuer, logger serverlog.Logger) http.Handler {
 	mux := http.NewServeMux()
 	loginSlots := make(chan struct{}, 16)
@@ -43,6 +45,7 @@ func NewHandler(accounts authenticator, tickets ticketIssuer, logger serverlog.L
 			http.Error(w, "invalid login request", http.StatusBadRequest)
 			return
 		}
+		// 限制同时进行的密码校验和票据签发数量，满载时立即返回。
 		select {
 		case loginSlots <- struct{}{}:
 			defer func() { <-loginSlots }()

@@ -23,14 +23,17 @@ type ticketConsumer interface {
 	Consume(ctx context.Context, ticket string) (string, error)
 }
 
+// Sessions 为 TCP 和 WebSocket 连接提供相同的一次性票据认证流程。
 type Sessions struct {
 	tickets ticketConsumer
 }
 
+// NewSessions 使用给定的票据存储创建会话认证处理器。
 func NewSessions(tickets ticketConsumer) *Sessions {
 	return &Sessions{tickets: tickets}
 }
 
+// SessionOptions 配置连接准入、帧大小、发送队列和读写时限。
 func SessionOptions() (socket.Options, error) {
 	admission, err := socket.NewAdmission(128, 16)
 	return socket.Options{
@@ -39,6 +42,7 @@ func SessionOptions() (socket.Options, error) {
 	}, err
 }
 
+// Connect 校验握手帧，消费票据后为连接绑定账号，并按请求序号返回会话信息。
 func (s *Sessions) Connect(ctx context.Context, session *socket.Session, frame rpc.Frame) error {
 	if _, authenticated := session.Value(sessionKey); authenticated ||
 		frame.ID != uint16(sessionpb.SessionMessageId_SESSION_MESSAGE_ID_CONNECT_REQUEST) || frame.Sequence == 0 {
@@ -50,6 +54,7 @@ func (s *Sessions) Connect(ctx context.Context, session *socket.Session, frame r
 	}
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
+	// 先验证消息类型和协议版本，再消费不可重复使用的票据。
 	account, err := s.tickets.Consume(ctx, request.GetTicket())
 	if err != nil {
 		return fmt.Errorf("consume ticket: %w", err)

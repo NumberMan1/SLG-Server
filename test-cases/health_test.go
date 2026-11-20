@@ -163,7 +163,7 @@ func TestGatewayDiscoversServicesWithEtcd(t *testing.T) {
 	wantHealth(http.StatusOK)
 	wantLogin(http.StatusUnauthorized)
 	stop(game)
-	// Keep the HTTP listener up so only removing the discovery record changes routing.
+	// 保持 HTTP 监听可用，验证仅删除发现记录就会改变网关的路由结果。
 	wantHealth(http.StatusBadGateway)
 	wantLogin(http.StatusUnauthorized)
 	stop(login)

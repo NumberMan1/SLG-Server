@@ -19,6 +19,7 @@ func main() {
 }
 
 func run(logger serverlog.Logger) error {
+	// 监听地址用于本进程绑定端口，公布地址供网关通过内部网络访问。
 	addr := env.GetEnv("SLG_GAME_ADDR", "127.0.0.1:8081").String()
 	advertise := env.GetEnv("SLG_GAME_ADVERTISE_URL", env.EnvValue("http://"+addr)).String()
 	client, registry, err := servicediscovery.Open()

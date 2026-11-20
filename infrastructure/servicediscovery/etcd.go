@@ -1,3 +1,4 @@
+// Package servicediscovery 将 SLG 的内部 HTTP 服务注册和查询接入 etcd。
 package servicediscovery
 
 import (
@@ -13,10 +14,13 @@ import (
 )
 
 const (
-	GameServer  = "game-server"
+	// GameServer 是游戏服在注册表中的服务名称。
+	GameServer = "game-server"
+	// LoginServer 是登录服在注册表中的服务名称。
 	LoginServer = "login-server"
 )
 
+// Open 根据 etcd 端点和键前缀创建服务注册表，客户端由调用方关闭。
 func Open() (*clientv3.Client, *discovery.Registry, error) {
 	endpoints := strings.Split(env.GetEnv("SLG_ETCD_ENDPOINTS", "http://127.0.0.1:2379").String(), ",")
 	for i := range endpoints {
@@ -41,6 +45,7 @@ func Open() (*clientv3.Client, *discovery.Registry, error) {
 	return client, registry, nil
 }
 
+// NewHTTPRegistrar 创建服务注册组件，调用方须提供其他进程可访问的 HTTP 地址。
 func NewHTTPRegistrar(registry *discovery.Registry, name, id, address string) (*discovery.Registrar, error) {
 	if _, err := ParseOrigin(address); err != nil {
 		return nil, err
@@ -51,6 +56,7 @@ func NewHTTPRegistrar(registry *discovery.Registry, name, id, address string) (*
 	return registry.NewRegistrar(discovery.Descriptor{ID: id, Name: name, Address: address}, discovery.RegistrarOptions{})
 }
 
+// ParseOrigin 验证内部服务地址的格式。请求路径由调用方在转发时填写。
 func ParseOrigin(address string) (*url.URL, error) {
 	origin, err := url.Parse(address)
 	if err != nil || (origin.Scheme != "http" && origin.Scheme != "https") ||

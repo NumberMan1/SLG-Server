@@ -25,6 +25,7 @@ func main() {
 }
 
 func run(logger serverlog.Logger) error {
+	// 初始化数据库或创建账号时执行一次性命令，常驻模式负责接收登录请求。
 	if len(os.Args) > 1 {
 		return runCommand(os.Args[1:])
 	}
@@ -59,6 +60,7 @@ func run(logger serverlog.Logger) error {
 	if err != nil {
 		return err
 	}
+	// HTTP 监听成功后才将登录服公布给网关。
 	return httpserver.Run(httpserver.Logged(logger, server), registrar)
 }
 

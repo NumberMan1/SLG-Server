@@ -46,6 +46,7 @@ func run(logger serverlog.Logger) error {
 	}
 	defer client.CloseIdleConnections()
 
+	// HTTP 路由通过服务目录选择后端，两种长连接复用同一套票据认证。
 	handler := gateway.NewHandler(gateway.DiscoveredServices(directory, servicediscovery.GameServer), client)
 	tickets := sessionticket.NewRedisTickets(cache, env.GetEnv("SLG_REDIS_KEY_PREFIX", sessionticket.DefaultPrefix).String())
 	sessions := gateway.NewSessions(tickets)
@@ -70,5 +71,6 @@ func run(logger serverlog.Logger) error {
 	if err != nil {
 		return err
 	}
+	// 先启动 TCP 监听器，再允许 HTTP 登录返回它的实际端口。
 	return httpserver.Run(directory, tcpServer, webSessions, httpserver.Logged(logger, server))
 }

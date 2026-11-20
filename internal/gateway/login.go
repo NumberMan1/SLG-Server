@@ -14,6 +14,7 @@ import (
 	sessionpb "github.com/NumberMan1/slg-server/proto"
 )
 
+// WithLogin 转发登录请求，并在回包中附上网关实际监听的 TCP 端口。
 func WithLogin(base http.Handler, addresses func() []string, client *http.Client, listener interface{ Addr() net.Addr }) http.Handler {
 	const maxBody = 1024
 	const protobufType = "application/protobuf"
@@ -22,6 +23,7 @@ func WithLogin(base http.Handler, addresses func() []string, client *http.Client
 	mux.Handle("/", base)
 	mux.HandleFunc("POST /v1/login", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
+		// 在接收登录数据前确认网关已有可公布的 TCP 监听端口。
 		addr, ok := listener.Addr().(*net.TCPAddr)
 		if !ok {
 			http.Error(w, "login unavailable", http.StatusServiceUnavailable)
@@ -77,6 +79,7 @@ func WithLogin(base http.Handler, addresses func() []string, client *http.Client
 			http.Error(w, "login unavailable", http.StatusServiceUnavailable)
 			return
 		}
+		// 只接受登录服签发的有效票据，客户端连接端口由网关填写。
 		var ticket sessionpb.LoginReply
 		if response.Header.Get("Content-Type") != protobufType ||
 			proto.Unmarshal(payload, &ticket) != nil || ticket.GetTicket() == "" {

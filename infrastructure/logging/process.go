@@ -1,3 +1,4 @@
+// Package logging 管理各服务进程的结构化日志。
 package logging
 
 import (
@@ -8,7 +9,7 @@ import (
 	"github.com/NumberMan1/log/field"
 )
 
-// Run owns the logger until the service and its components have stopped.
+// Run 为服务配置结构化日志，服务退出后关闭日志记录器并返回进程退出码。
 func Run(service string, run func(serverlog.Logger) error) int {
 	core, err := serverlog.NewConfiguredLogger(serverlog.Config{
 		Stdout:    true,
