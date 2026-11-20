@@ -4,10 +4,11 @@
 
 | 路径 | 职责 |
 | --- | --- |
-| `cmd/gateway`、`cmd/game-server` | Go 进程入口与启动配置 |
-| `internal/gateway`、`internal/gameserver` | 网关路由与游戏服 HTTP 接口 |
+| `cmd/gateway`、`cmd/login-server`、`cmd/game-server` | Go 进程入口与启动配置 |
+| `internal/gateway`、`internal/loginserver`、`internal/gameserver` | 网关路由、账号认证和游戏服接口 |
 | `infrastructure/httpserver` | Orbit 生命周期装配、进程信号和健康响应 |
 | `infrastructure/logging` | NumberMan1/log 进程日志初始化和关闭 |
+| `infrastructure/storage`、`infrastructure/servicediscovery` | Orbit 的 MySQL、Redis 和 etcd 装配 |
 | `battle-server` | C++ 战斗服可执行目标与 CTest 冒烟用例 |
 | [database](database/README.md) | MySQL 建表与数据迁移 SQL |
 | `testkit` | 通过真实 HTTP 连接装配 Go 网关与游戏服 |
@@ -20,7 +21,7 @@
 
 ## 在 Podman 中启动
 
-联调需要 Podman、Go 1.27.2、`curl` 和 POSIX `sh`。Windows 可使用 Git Bash，并先启动自己的 Podman 虚拟机。脚本用宿主机 Go 工具链编译 Linux 网关和游戏服，再用 Podman 构建镜像。
+联调需要 Podman、Go 1.27.2、`curl` 和 POSIX `sh`。Windows 可使用 Git Bash，并先启动自己的 Podman 虚拟机。脚本编译 Linux 网关、登录服务和游戏服，再用 Podman 构建镜像。
 
 Orbit、Numbox 和 NumberMan1/log 通过 Go Modules 下载，版本和校验和固定在 `go.mod` 与 `go.sum`。服务端模块路径为 `github.com/NumberMan1/slg-server`。
 
@@ -30,7 +31,7 @@ Orbit、Numbox 和 NumberMan1/log 通过 Go Modules 下载，版本和校验和�
 export GOPRIVATE="${GOPRIVATE:+$GOPRIVATE,}github.com/NumberMan1/orbit"
 ```
 
-在服务端仓库根目录把 `.env.example` 复制为 `.env`，编辑其中的 `SLG_DEMO_PASSWORD` 后启动。脚本以 shell 语法载入该文件，使用 `KEY=value` 格式，包含空格的值用引号包住。文件中的显式赋值优先于传入的同名变量。`.env` 由 Git 忽略。
+在服务端仓库根目录把 `.env.example` 复制为 `.env`，填写 MySQL DSN、Redis 密码和本机联调密码。先启动 MySQL、Redis 和 etcd，并确认它们可从 SLG 容器网络访问。脚本以 shell 语法载入该文件，使用 `KEY=value` 格式。包含括号等 shell 特殊字符的值要加引号。文件中的显式赋值优先于传入的同名变量。`.env` 由 Git 忽略。
 
 ```sh
 cp .env.example .env
@@ -47,8 +48,35 @@ sh scripts/dev.sh status
 | `SLG_PODMAN_NETWORK` | `slg-dev` | 默认自动创建，指定其他网络时复用已有网络 |
 | `SLG_GATEWAY_HTTP_PORT` | `8080` | Unity 登录和健康检查的宿主机端口 |
 | `SLG_GATEWAY_TCP_PORT` | `19090` | Unity 从登录响应获得的 TCP 端口 |
+| `SLG_WEB_ROOT` | 空 | 直接运行网关时可填 Unity Web 构建目录，在同一 HTTP 站点提供试玩页面 |
+| `SLG_MYSQL_DSN` | 登录服务必填 | MySQL 连接串，其中数据库需提前创建 |
+| `SLG_MYSQL_ADDRESS` | 空 | 直接运行登录服务时可覆盖 MySQL TCP 地址，沿用连接串中的凭据和数据库 |
+| `SLG_REDIS_MODE` | `cluster` | Redis 连接模式 |
+| `SLG_REDIS_ADDRESSES` | Dev 脚本在 `gm-dev` 网络使用三个 `gm-redis-*` 节点，其他网络使用三个 `slg-dev-redis-*` 节点。直接运行网关使用 `127.0.0.1:6379` | Cluster 种子地址以逗号分隔，单机模式必须填写一个地址 |
+| `SLG_REDIS_USERNAME`、`SLG_REDIS_PASSWORD` | 空 | Redis ACL 凭据 |
+| `SLG_REDIS_DIAL_ADDRESSES` | 空 | 直接运行进程时可把 Redis Cluster 返回的节点地址映射到宿主机端口，格式为逗号分隔的 `节点地址=拨号地址` |
+| `SLG_REDIS_KEY_PREFIX` | `slg:login` | 同环境登录服务和网关共享的票据前缀 |
+| `SLG_ETCD_ENDPOINTS` | Dev 脚本使用 gm-dev 内部地址，直接运行进程使用 `http://127.0.0.1:2379` | 逗号分隔的 etcd 地址 |
+| `SLG_ETCD_PREFIX` | `/slg/services` | 同环境服务共享的发现前缀 |
+| `SLG_ETCD_USERNAME`、`SLG_ETCD_PASSWORD` | 空 | etcd 凭据 |
+| `SLG_LOGIN_ADDR` | `127.0.0.1:8082` | 直接运行登录服务时的 HTTP 监听地址 |
+| `SLG_LOGIN_ADVERTISE_URL` | `http://` + 登录服务监听地址 | 登录服务公布给网关的 HTTP 地址 |
+| `SLG_LOGIN_INSTANCE_ID` | 进程启动生成 | 可选，指定实例 ID 时须在发现前缀下唯一 |
+| `SLG_GAME_ADVERTISE_URL` | `http://` + 游戏服监听地址 | 游戏服实例公布给网关的 HTTP 地址。监听通配地址时填写实际可达地址 |
+| `SLG_GAME_INSTANCE_ID` | 进程启动生成 | 可选，指定实例 ID 时须在发现前缀下唯一 |
 
-已有 `gm-dev` 环境时，可把上述前三项都设为 `gm-dev`。网关只向宿主机回环地址公开 HTTP 和 TCP 端口，游戏服的 `8081` 在容器网络内使用。Unity 默认用 `demo` 和配置中的密码登录。修改 HTTP 端口后，在 Unity 登录场景填写新的网关地址。未设置密码时，登录接口返回 `503`。
+已有 `gm-dev` 环境时，将前三个 Podman 配置项都设为 `gm-dev`。在本机的 `dev-services` 目录运行 `./services.ps1 redis-up`，再执行 `podman --connection gm-dev start gm-mysql gm-etcd-1 gm-etcd-2 gm-etcd-3`。在 SLG 的 `.env` 填入该集群的 `SLG_REDIS_PASSWORD`。脚本自动选用 `gm-redis-1:6379`、`gm-redis-2:6379` 和 `gm-redis-3:6379`。网关只向宿主机回环地址公开 HTTP 和 TCP 端口。登录服务的 `8082` 和游戏服的 `8081` 在容器网络内使用。
+
+使用独立的 `slg-dev` 网络时，在 `.env` 设置 `SLG_REDIS_MODE=cluster` 和 `SLG_REDIS_PASSWORD`，然后执行以下命令。
+
+```sh
+sh scripts/dev.sh redis-cluster-up
+sh scripts/dev.sh up
+```
+
+这会在 Podman 网络上创建三个 Redis 主节点和各自的数据卷，并分配全部 16384 个槽位。节点名称为 `slg-dev-redis-1` 至 `slg-dev-redis-3`，端口 `6379` 仅供容器网络访问。该拓扑用于验证分片，三个节点均无副本。脚本重复运行时复用现有节点。应用的 `down` 只处理应用容器。接入其他 Redis Cluster 时，在 `SLG_REDIS_ADDRESSES` 填入种子地址，并确认网关可访问集群返回的各节点地址。
+
+启动脚本会应用 [MySQL 迁移](database/README.md)。填写 `SLG_DEMO_PASSWORD` 时，它会创建 `SLG_DEMO_ACCOUNT` 指定的联调账号，默认为 `demo`。Unity 登录时填写该账号和密码。修改 HTTP 端口后，在 Unity 登录场景填写新的网关地址。
 
 使用以下命令检查网关到游戏服的链路，预期返回 `service = game-server` 和 `status = ok`。联调结束后可执行 `down` 停止并删除 SLG 容器。
 
@@ -57,15 +85,19 @@ curl http://127.0.0.1:8080/v1/game/health
 sh scripts/dev.sh down
 ```
 
-登录联调使用网关和游戏服，账号和一次性票据保存在网关内存中。C++20 战斗服目前用 CMake 和 CTest 验证启动。
+登录服务通过 MySQL 校验密码并把一次性票据写入 Redis，网关在 TCP 握手时原子消费票据。登录服务和游戏服在 etcd 注册后可由网关路由。C++20 战斗服目前用 CMake 和 CTest 验证启动。
 
-Go 网关和游戏服通过 NumberMan1/log 把结构化 JSON 写到标准输出，日志用 `service` 标识进程。Podman 联调时可用 `podman logs slg-dev-gateway` 或 `podman logs slg-dev-game-server` 查看。
+Go 进程通过 NumberMan1/log 把结构化 JSON 写到标准输出，日志用 `service` 标识进程。Podman 联调时可用 `podman logs slg-dev-gateway`、`podman logs slg-dev-login-server` 或 `podman logs slg-dev-game-server` 查看。
+
+浏览器的长连接入口是网关 HTTP 端口上的 `/v1/session` WebSocket。在线站点使用 HTTPS 和 WSS，在反向代理处终止 TLS，并为静态页面、HTTP 登录和 WebSocket 配置同一域名。反向代理应保留原始 Host，并转发 WebSocket Upgrade。直接运行网关时可通过 `SLG_WEB_ROOT` 提供客户端未压缩 Web 构建。Podman 模式可由前置 Web 服务器提供这些静态文件。
 
 ## 在 VS Code 中调试
 
-在服务端仓库根目录运行 `code .`，安装 Go 和 C/C++ 扩展。以下调试选项来自本机的 `.vscode/`，该目录由 Git 忽略。首次调试 Go 时，可运行 **Go: Install/Update Tools** 安装 `dlv`。从已设置 `GOPRIVATE` 的终端启动 VS Code，让扩展和任务一并使用该设置。网关调试从 `.env` 读取演示账号和密码。
+在服务端仓库根目录运行 `code .`，安装 Go 和 C/C++ 扩展。以下调试选项来自本机的 `.vscode/`，该目录由 Git 忽略。首次调试 Go 时，可运行 **Go: Install/Update Tools** 安装 `dlv`。从已设置 `GOPRIVATE` 的终端启动 VS Code，让扩展和任务一并使用该设置。
 
-- 在 **Run and Debug** 选 **Go: Gateway + Game Server**，按 **F5** 同时启动两个本机进程。Unity 联调时填写 `http://127.0.0.1:28080`，网关通过登录响应返回 TCP 端口 `29090`，游戏服监听 `28081`。单独调试可选 **Go: Gateway** 或 **Go: Game Server**。
+VS Code 的三个 Go 启动项和 Podman 共用 `.env`。在 `.env` 明确填写 `SLG_REDIS_ADDRESSES=gm-redis-1:6379,gm-redis-2:6379,gm-redis-3:6379`，并按上文启动 `gm-dev` 的 MySQL、etcd 和 Redis。Go 启动项在 `launch.json` 的 `env` 中覆盖 `SLG_ETCD_ENDPOINTS` 为宿主机回环地址，并用独立的 `SLG_ETCD_PREFIX=/slg/local-debug/services` 隔离调试注册。登录服务通过 `SLG_MYSQL_ADDRESS=127.0.0.1:3306` 复用同一 MySQL 连接串。登录服务和网关通过 `SLG_REDIS_DIAL_ADDRESSES=gm-redis-1:6379=127.0.0.1:16301,gm-redis-2:6379=127.0.0.1:16302,gm-redis-3:6379=127.0.0.1:16303` 访问同一 Redis Cluster，调试票据使用 `SLG_REDIS_KEY_PREFIX=slg:local-debug:login`。
+
+- 在 **Run and Debug** 选 **Go: SLG Stack**，按 **F5** 启动三个本机进程。Unity 联调时填写 `http://127.0.0.1:28080`，网关通过登录响应返回 TCP 端口 `29090`，游戏服监听 `28081`，登录服务监听 `28082`。单独调试可选 **Go: Gateway**、**Go: Login Server** 或 **Go: Game Server**。
 - 用 **Go: Integration Tests** 在 `test-cases` 中打断点。通过 **Tasks: Run Task** 运行 **Go: Test All** 或 **SLG: Verify Server**。
 - 用 **C++: Battle Server Healthcheck** 调试 `--healthcheck`。启动前任务用 CMake 和 Ninja 构建 Debug 版本。Windows 和 Linux 需要 PATH 中的 GDB，macOS 需要 LLDB-MI。
 - **Podman: Start SLG**、**Podman: Status** 和 **Podman: Stop SLG** 调用 `scripts/dev.sh`，沿用 `.env` 的 `gm-dev` 配置和默认 HTTP 端口 `8080`。Windows 任务使用 Git for Windows 自带的 `sh`。
@@ -90,6 +122,8 @@ Ninja 单配置构建在 Windows 上可运行 `./.build/battle/battle-server.exe
 
 ## GitHub Actions
 
-Server CI 在 `develop`、`master` 的推送和目标为这两个分支的同仓 PR 上运行，也支持手动运行。它按 `go.mod` 安装 Go，下载并校验依赖，执行 `sh scripts/verify.sh`，再构建两个 Go 进程。HTTP 登录、TCP 认证和游戏服健康检查由现有集成用例覆盖，使用 runner 的回环端口。
+Server CI 在 `develop`、`master` 的推送和目标为这两个分支的同仓 PR 上运行，也支持手动运行。它按 `go.mod` 安装 Go，下载并校验依赖，使用临时 MySQL、单机 Redis 和 etcd 验证登录转发、TCP 票据和内部服务发现，执行 C++ 构建与测试，再构建三个 Go 进程。
+
+本地可在校验命令前提供 `SLG_TEST_MYSQL_DSN`、`SLG_TEST_REDIS_ADDRESSES`、`SLG_TEST_REDIS_PASSWORD` 和 `SLG_TEST_ETCD_ENDPOINTS`，复用真实中间件。Redis 集群测试额外设置 `SLG_TEST_REDIS_MODE=cluster`。登录中间件用例会应用建表迁移并删除本次创建的测试账号。
 
 在 SLG-Server 的 **Settings → Secrets and variables → Actions** 添加 `ORBIT_READ_TOKEN`。使用仅对 `NumberMan1/orbit` 有 **Contents: Read-only** 权限的细粒度 GitHub token。来自 fork 或 Dependabot 的 PR 跳过该任务。[GitHub 凭据配置](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens)

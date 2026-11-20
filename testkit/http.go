@@ -19,23 +19,20 @@ type HTTPStack struct {
 
 func StartHTTPStack(t testing.TB) HTTPStack {
 	t.Helper()
-	gameURL, stopGame := startHTTP(t, gameserver.NewHandler())
+	gameURL, stopGame := StartHTTP(t, gameserver.NewHandler())
 
-	client, err := gateway.NewGameClient()
+	client, err := gateway.NewUpstreamClient()
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(client.CloseIdleConnections)
-	handler, err := gateway.NewHandler(gameURL, client)
-	if err != nil {
-		t.Fatal(err)
-	}
-	gatewayURL, _ := startHTTP(t, handler)
+	handler := gateway.NewHandler(func() []string { return []string{gameURL} }, client)
+	gatewayURL, _ := StartHTTP(t, handler)
 
 	return HTTPStack{GatewayURL: gatewayURL, StopGame: stopGame}
 }
 
-func startHTTP(t testing.TB, handler http.Handler) (string, func()) {
+func StartHTTP(t testing.TB, handler http.Handler) (string, func()) {
 	t.Helper()
 	server, err := orbithttp.NewServer("127.0.0.1:0", handler, nil)
 	if err != nil {

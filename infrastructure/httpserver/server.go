@@ -27,8 +27,11 @@ func (s loggedServer) Start(ctx context.Context) error {
 	return nil
 }
 
-func Run(logger serverlog.Logger, server *orbithttp.Server, dependencies ...orbit.Component) error {
-	components := append(dependencies, loggedServer{Server: server, logger: logger})
+func Logged(logger serverlog.Logger, server *orbithttp.Server) orbit.Component {
+	return loggedServer{Server: server, logger: logger}
+}
+
+func Run(components ...orbit.Component) error {
 	app, err := service.NewApp(5*time.Second, components...)
 	if err != nil {
 		return err

@@ -23,6 +23,36 @@ jobs:
       GOPRIVATE: github.com/NumberMan1/orbit
       GOTOOLCHAIN: local
       GOFLAGS: -mod=readonly
+    services:
+      mysql:
+        image: mysql:8.4.11
+        env:
+          MYSQL_ROOT_PASSWORD: slg-ci-root
+          MYSQL_DATABASE: slg
+          MYSQL_USER: slg
+          MYSQL_PASSWORD: slg-ci
+        ports:
+          - 3306/tcp
+        options: >-
+          --health-cmd="mysql --protocol=tcp -h127.0.0.1 -uslg -pslg-ci slg -e 'SELECT 1'"
+          --health-interval=5s --health-timeout=3s --health-retries=20
+      redis:
+        image: redis:8.2.10-alpine
+        ports:
+          - 6379/tcp
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=5s --health-timeout=3s --health-retries=10
+      etcd:
+        image: quay.io/coreos/etcd:v3.7.2
+        env:
+          ETCD_LISTEN_CLIENT_URLS: http://0.0.0.0:2379
+          ETCD_ADVERTISE_CLIENT_URLS: http://127.0.0.1:2379
+        ports:
+          - 2379/tcp
+        options: >-
+          --health-cmd="/usr/local/bin/etcdctl endpoint health"
+          --health-interval=5s --health-timeout=3s --health-retries=10
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -50,6 +80,10 @@ jobs:
           go mod verify
 
       - name: Test Go and build and test C++20
+        env:
+          SLG_TEST_MYSQL_DSN: slg:slg-ci@tcp(127.0.0.1:${{ job.services.mysql.ports['3306'] }})/slg
+          SLG_TEST_REDIS_ADDRESSES: 127.0.0.1:${{ job.services.redis.ports['6379'] }}
+          SLG_TEST_ETCD_ENDPOINTS: http://127.0.0.1:${{ job.services.etcd.ports['2379'] }}
         run: sh scripts/verify.sh
 
       - name: Build Go services

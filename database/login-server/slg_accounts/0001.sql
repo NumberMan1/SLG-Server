@@ -1,0 +1,8 @@
+CREATE TABLE IF NOT EXISTS slg_accounts (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    account VARBINARY(64) NOT NULL,
+    password_hash VARBINARY(60) NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    UNIQUE KEY uq_slg_accounts_account (account)
+) ENGINE=InnoDB;
