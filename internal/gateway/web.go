@@ -13,9 +13,9 @@ type WebSessions struct {
 	transport *orbitws.Server
 }
 
-// NewWebSessions 创建 WebSocket 会话处理器，复用 TCP 会话的认证规则。
-func NewWebSessions(options socket.Options, sessions *Sessions) (*WebSessions, error) {
-	transport, err := orbitws.NewServer("127.0.0.1:0", options, sessions.Connect, nil, nil)
+// NewWebSessions 创建 WebSocket 会话处理器，复用 TCP 会话的帧处理规则。
+func NewWebSessions(options socket.Options, handler socket.Handler) (*WebSessions, error) {
+	transport, err := orbitws.NewServer("127.0.0.1:0", options, handler, nil, nil)
 	if err != nil {
 		return nil, err
 	}

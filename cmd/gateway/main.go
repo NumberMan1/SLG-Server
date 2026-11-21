@@ -46,31 +46,47 @@ func run(logger serverlog.Logger) error {
 	}
 	defer client.CloseIdleConnections()
 
-	// HTTP 路由通过服务目录选择后端，两种长连接复用同一套票据认证。
-	handler := gateway.NewHandler(gateway.DiscoveredServices(directory, servicediscovery.GameServer), client)
+	// 单个游戏服拥有试玩世界，网关使用明确配置的内网地址。
+	gameURL := env.GetEnv("SLG_GAME_UPSTREAM_URL", "http://127.0.0.1:8081").String()
+	if _, err := servicediscovery.ParseOrigin(gameURL); err != nil {
+		return err
+	}
+	gameAddresses := func() []string { return []string{gameURL} }
+	handler := gateway.NewHandler(gameAddresses, client)
+	world, err := gateway.NewWorldConnector(env.GetEnv("SLG_GAME_RPC_UPSTREAM", "127.0.0.1:8083").String())
+	if err != nil {
+		return err
+	}
 	tickets := sessionticket.NewRedisTickets(cache, env.GetEnv("SLG_REDIS_KEY_PREFIX", sessionticket.DefaultPrefix).String())
 	sessions := gateway.NewSessions(tickets)
+	handleFrame := sessions.WorldHandler(world)
 	options, err := gateway.SessionOptions()
 	if err != nil {
 		return err
 	}
 	options.Logger = logger.With(field.String("transport", "tcp"))
-	tcpServer, err := orbittcp.NewServer(tcpAddr, options, sessions.Connect, nil)
+	tcpServer, err := orbittcp.NewServer(tcpAddr, options, handleFrame, nil)
 	if err != nil {
 		return err
 	}
-	mux := gateway.WithLogin(handler, gateway.DiscoveredServices(directory, servicediscovery.LoginServer), client, tcpServer)
+	loginAddresses := gateway.DiscoveredServices(directory, servicediscovery.LoginServer)
+	mux := gateway.WithLogin(handler, loginAddresses, client, tcpServer)
 	webOptions := options
 	webOptions.Logger = logger.With(field.String("transport", "websocket"))
-	webSessions, err := gateway.NewWebSessions(webOptions, sessions)
+	webSessions, err := gateway.NewWebSessions(webOptions, handleFrame)
 	if err != nil {
 		return err
 	}
 	mux = gateway.WithWeb(mux, webSessions, os.Getenv("SLG_WEB_ROOT"))
+	mux = httpserver.WithReadiness(mux, tickets.Ready, func(ctx context.Context) error {
+		return gateway.CheckLoginReady(ctx, loginAddresses(), client)
+	}, func(ctx context.Context) error {
+		return gateway.CheckWorldReady(ctx, world)
+	})
 	server, err := orbithttp.NewServer(addr, mux, nil)
 	if err != nil {
 		return err
 	}
 	// 先启动 TCP 监听器，再允许 HTTP 登录返回它的实际端口。
-	return httpserver.Run(directory, tcpServer, webSessions, httpserver.Logged(logger, server))
+	return httpserver.Run(directory, world, tcpServer, webSessions, httpserver.Logged(logger, server))
 }

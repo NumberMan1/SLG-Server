@@ -55,6 +55,28 @@ func (s *RedisTickets) Consume(ctx context.Context, ticket string) (string, erro
 	return account, err
 }
 
+// Ready 用独立的短期探针检查签发和消费依赖的 Redis 操作。
+func (s *RedisTickets) Ready(ctx context.Context) error {
+	// 探针键位于票据摘要之外，即使请求中断，Redis 也会按 TTL 回收它。
+	key := s.prefix + "ready:" + rand.Text()
+	const value = "ready"
+	created, err := s.client.SetNX(ctx, key, value, ticketLifetime).Result()
+	if err != nil {
+		return err
+	}
+	if !created {
+		return errors.New("ticket readiness probe conflict")
+	}
+	stored, err := s.client.GetDel(ctx, key).Result()
+	if err != nil {
+		return err
+	}
+	if stored != value {
+		return errors.New("ticket readiness probe changed")
+	}
+	return nil
+}
+
 func (s *RedisTickets) key(ticket string) string {
 	// 用票据摘要生成键，Redis 中的键名不直接暴露可用于登录的票据。
 	sum := sha256.Sum256([]byte(ticket))

@@ -29,6 +29,10 @@ func run(logger serverlog.Logger) error {
 	if len(os.Args) > 1 {
 		return runCommand(os.Args[1:])
 	}
+	limits, err := loadAdmissionLimits()
+	if err != nil {
+		return err
+	}
 	addr := env.GetEnv("SLG_LOGIN_ADDR", "127.0.0.1:8082").String()
 	advertise := env.GetEnv("SLG_LOGIN_ADVERTISE_URL", env.EnvValue("http://"+addr)).String()
 	ctx := context.Background()
@@ -56,7 +60,8 @@ func run(logger serverlog.Logger) error {
 		return fmt.Errorf("register login service: %w", err)
 	}
 	tickets := sessionticket.NewRedisTickets(cache, env.GetEnv("SLG_REDIS_KEY_PREFIX", sessionticket.DefaultPrefix).String())
-	server, err := orbithttp.NewServer(addr, loginserver.NewHandler(accounts, tickets, logger), nil)
+	handler := httpserver.WithReadiness(loginserver.NewHandler(accounts, tickets, logger, limits), db.PingContext, tickets.Ready)
+	server, err := orbithttp.NewServer(addr, handler, nil)
 	if err != nil {
 		return err
 	}

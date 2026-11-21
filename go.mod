@@ -5,7 +5,7 @@ go 1.27.2
 require (
 	github.com/NumberMan1/log v0.3.1
 	github.com/NumberMan1/numbox v0.4.2
-	github.com/NumberMan1/orbit v0.2.1
+	github.com/NumberMan1/orbit v0.4.0
 	github.com/go-sql-driver/mysql v1.10.1
 	github.com/gorilla/websocket v1.5.3
 	github.com/redis/go-redis/v9 v9.23.0

@@ -4,22 +4,54 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"mime"
 	"net"
 	"net/http"
 	"os"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	serverlog "github.com/NumberMan1/log"
 	"github.com/NumberMan1/orbit/discovery"
 
+	"github.com/NumberMan1/slg-server/infrastructure/httpserver"
 	"github.com/NumberMan1/slg-server/infrastructure/servicediscovery"
-	"github.com/NumberMan1/slg-server/internal/gameserver"
 	"github.com/NumberMan1/slg-server/internal/gateway"
 	"github.com/NumberMan1/slg-server/internal/loginserver"
 	"github.com/NumberMan1/slg-server/testkit"
 )
+
+func TestGatewayReadinessChecksLoginDependencies(t *testing.T) {
+	var available atomic.Bool
+	login := httpserver.WithReadiness(http.NotFoundHandler(), func(context.Context) error {
+		if !available.Load() {
+			return errors.New("ticket store unavailable")
+		}
+		return nil
+	})
+	loginURL, _ := testkit.StartHTTP(t, login)
+	client, err := gateway.NewUpstreamClient()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(client.CloseIdleConnections)
+	gatewayURL, _ := testkit.StartHTTP(t, httpserver.WithReadiness(http.NotFoundHandler(), func(ctx context.Context) error {
+		return gateway.CheckLoginReady(ctx, []string{loginURL}, client)
+	}))
+	for _, want := range []int{http.StatusServiceUnavailable, http.StatusNoContent} {
+		available.Store(want == http.StatusNoContent)
+		response, err := client.Get(gatewayURL + "/readyz")
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = response.Body.Close()
+		if response.StatusCode != want {
+			t.Fatalf("readiness returned %d, want %d", response.StatusCode, want)
+		}
+	}
+}
 
 func TestGatewayHealth(t *testing.T) {
 	stack := testkit.StartHTTPStack(t)
@@ -144,8 +176,8 @@ func TestGatewayDiscoversServicesWithEtcd(t *testing.T) {
 	}
 	wantHealth(http.StatusBadGateway)
 	wantLogin(http.StatusServiceUnavailable)
-	gameURL, _ := testkit.StartHTTP(t, gameserver.NewHandler())
-	loginURL, _ := testkit.StartHTTP(t, loginserver.NewHandler(testAccount{}, &memoryTickets{}, serverlog.DefaultLogger()))
+	gameURL, _ := testkit.StartHTTP(t, testkit.GameHealth())
+	loginURL, _ := testkit.StartHTTP(t, loginserver.NewHandler(&testAccount{}, &memoryTickets{}, serverlog.DefaultLogger(), loginserver.DefaultAdmissionLimits()))
 	register := func(name, address string) *discovery.Registrar {
 		t.Helper()
 		registrar, err := servicediscovery.NewHTTPRegistrar(registry, name, "", address)

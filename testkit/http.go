@@ -9,7 +9,7 @@ import (
 
 	orbithttp "github.com/NumberMan1/orbit/socket/http"
 
-	"github.com/NumberMan1/slg-server/internal/gameserver"
+	"github.com/NumberMan1/slg-server/infrastructure/httpserver"
 	"github.com/NumberMan1/slg-server/internal/gateway"
 )
 
@@ -22,7 +22,7 @@ type HTTPStack struct {
 // StartHTTPStack 在不同端口上启动游戏服和网关，由测试清理流程关闭它们。
 func StartHTTPStack(t testing.TB) HTTPStack {
 	t.Helper()
-	gameURL, stopGame := StartHTTP(t, gameserver.NewHandler())
+	gameURL, stopGame := StartHTTP(t, GameHealth())
 
 	client, err := gateway.NewUpstreamClient()
 	if err != nil {
@@ -33,6 +33,13 @@ func StartHTTPStack(t testing.TB) HTTPStack {
 	gatewayURL, _ := StartHTTP(t, handler)
 
 	return HTTPStack{GatewayURL: gatewayURL, StopGame: stopGame}
+}
+
+// GameHealth 模拟游戏服健康接口，用于单独验证网关路由。
+func GameHealth() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", httpserver.Health("game-server"))
+	return mux
 }
 
 // StartHTTP 在回环地址上分配可用端口，返回访问地址和可提前调用的停止函数。

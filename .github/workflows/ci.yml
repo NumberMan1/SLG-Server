@@ -85,7 +85,7 @@ jobs:
             go mod download
           go mod verify
 
-      - name: Test Go and build and test C++20
+      - name: Verify Go and C++ services
         env:
           SLG_TEST_MYSQL_DSN: slg:slg-ci@tcp(127.0.0.1:${{ job.services.mysql.ports['3306'] }})/slg
           SLG_TEST_REDIS_ADDRESSES: 127.0.0.1:${{ job.services.redis.ports['6379'] }}

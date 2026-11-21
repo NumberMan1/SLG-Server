@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"unicode/utf8"
 
 	"github.com/go-sql-driver/mysql"
@@ -13,6 +14,9 @@ import (
 
 // ErrCredentials 表示账号不存在、凭据格式无效或密码不匹配。
 var ErrCredentials = errors.New("invalid credentials")
+
+// ErrAccountExists 表示该账号已存在，原密码摘要保持不变。
+var ErrAccountExists = errors.New("account already exists")
 
 // Accounts 在 MySQL 中管理账号及其 bcrypt 密码摘要。
 type Accounts struct {
@@ -40,6 +44,25 @@ func (a *Accounts) Create(ctx context.Context, account, password string) error {
 	if !validCredentials(account, password) {
 		return errors.New("account must contain 1–64 UTF-8 bytes and password 1–72 bytes")
 	}
+	err := a.insert(ctx, account, password)
+	if errors.Is(err, ErrAccountExists) {
+		if err = a.Authenticate(ctx, account, password); errors.Is(err, ErrCredentials) {
+			return ErrAccountExists
+		}
+	}
+	return err
+}
+
+// Register 校验玩家提交的凭据并创建账号。并发重复注册由 MySQL 唯一键拒绝。
+func (a *Accounts) Register(ctx context.Context, account, password string) error {
+	if !validCredentials(account, password) || strings.TrimSpace(account) != account ||
+		!utf8.ValidString(password) || utf8.RuneCountInString(password) < 8 {
+		return ErrCredentials
+	}
+	return a.insert(ctx, account, password)
+}
+
+func (a *Accounts) insert(ctx context.Context, account, password string) error {
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
 		return err
@@ -48,9 +71,7 @@ func (a *Accounts) Create(ctx context.Context, account, password string) error {
 		"INSERT INTO slg_accounts (account, password_hash) VALUES (?, ?)", account, hash)
 	var duplicate *mysql.MySQLError
 	if errors.As(err, &duplicate) && duplicate.Number == 1062 {
-		if err = a.Authenticate(ctx, account, password); errors.Is(err, ErrCredentials) {
-			return errors.New("account already exists with a different password")
-		}
+		return ErrAccountExists
 	}
 	return err
 }

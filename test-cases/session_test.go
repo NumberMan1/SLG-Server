@@ -29,9 +29,9 @@ import (
 	"github.com/NumberMan1/slg-server/testkit"
 )
 
-func TestLoginAndTCPConnect(t *testing.T) {
+func TestRegistrationLoginAndTCPConnect(t *testing.T) {
 	store := &memoryTickets{}
-	login := loginserver.NewHandler(testAccount{}, store, serverlog.DefaultLogger())
+	login := loginserver.NewHandler(&testAccount{}, store, serverlog.DefaultLogger(), loginserver.DefaultAdmissionLimits())
 	runLoginAndTCPConnect(t, "demo", login, gateway.NewSessions(store))
 }
 
@@ -68,14 +68,6 @@ func TestLoginWithMySQLAndRedis(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	for range 2 {
-		if err := accounts.Create(t.Context(), account, "test-password"); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := accounts.Create(t.Context(), account, "different-password"); err == nil {
-		t.Fatal("account creation replaced the existing password")
-	}
 	issueClient, err := storage.OpenRedis(t.Context())
 	if err != nil {
 		t.Fatal(err)
@@ -87,17 +79,47 @@ func TestLoginWithMySQLAndRedis(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = consumeClient.Close() })
 	prefix := "slg:test:" + rand.Text()
-	login := loginserver.NewHandler(accounts, sessionticket.NewRedisTickets(issueClient, prefix), serverlog.DefaultLogger())
-	consumer := gateway.NewSessions(sessionticket.NewRedisTickets(consumeClient, prefix))
+	issuer := sessionticket.NewRedisTickets(issueClient, prefix)
+	consumerStore := sessionticket.NewRedisTickets(consumeClient, prefix)
+	if err := issuer.Ready(t.Context()); err != nil {
+		t.Fatalf("Redis ticket readiness probe failed: %v", err)
+	}
+	login := loginserver.NewHandler(accounts, issuer, serverlog.DefaultLogger(), loginserver.DefaultAdmissionLimits())
+	consumer := gateway.NewSessions(consumerStore)
 	runLoginAndTCPConnect(t, account, login, consumer)
+	if err := accounts.Create(t.Context(), account, "test-password"); err != nil {
+		t.Fatalf("CLI creation must remain idempotent: %v", err)
+	}
+	if err := accounts.Create(t.Context(), account, "different-password"); !errors.Is(err, loginserver.ErrAccountExists) {
+		t.Fatalf("CLI accepted another password: %v", err)
+	}
 }
 
-type testAccount struct{}
+type testAccount struct {
+	mu       sync.Mutex
+	account  string
+	password string
+}
 
-func (testAccount) Authenticate(_ context.Context, account, password string) error {
-	if account != "demo" || password != "test-password" {
+func (a *testAccount) Authenticate(_ context.Context, account, password string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.account == "" || account != a.account || password != a.password {
 		return loginserver.ErrCredentials
 	}
+	return nil
+}
+
+func (a *testAccount) Register(_ context.Context, account, password string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if account == "" || len(password) < 8 {
+		return loginserver.ErrCredentials
+	}
+	if a.account == account {
+		return loginserver.ErrAccountExists
+	}
+	a.account, a.password = account, password
 	return nil
 }
 
@@ -154,7 +176,7 @@ func runLoginAndTCPConnect(t *testing.T, account string, loginHandler http.Handl
 		t.Fatal(err)
 	}
 	t.Cleanup(upstream.CloseIdleConnections)
-	web, err := gateway.NewWebSessions(options, consumer)
+	web, err := gateway.NewWebSessions(options, consumer.Connect)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,19 +194,19 @@ func runLoginAndTCPConnect(t *testing.T, account string, loginHandler http.Handl
 		func() []string { return []string{loginURL} }, upstream, tcpServer), web, ""))
 	client := &http.Client{Timeout: 4 * time.Second}
 
-	login := func(name, password string, wantStatus int) []byte {
+	post := func(path string, request proto.Message, wantStatus int) []byte {
 		t.Helper()
-		payload, err := proto.Marshal(&sessionpb.LoginRequest{Account: name, Password: password})
+		payload, err := proto.Marshal(request)
 		if err != nil {
 			t.Fatal(err)
 		}
-		response, err := client.Post(gatewayURL+"/v1/login", "application/protobuf", bytes.NewReader(payload))
+		response, err := client.Post(gatewayURL+path, "application/protobuf", bytes.NewReader(payload))
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer response.Body.Close()
 		if response.StatusCode != wantStatus {
-			t.Fatalf("login status %d, want %d", response.StatusCode, wantStatus)
+			t.Fatalf("%s status %d, want %d", path, response.StatusCode, wantStatus)
 		}
 		body, err := io.ReadAll(response.Body)
 		if err != nil {
@@ -192,6 +214,21 @@ func runLoginAndTCPConnect(t *testing.T, account string, loginHandler http.Handl
 		}
 		return body
 	}
+	login := func(name, password string, wantStatus int) []byte {
+		t.Helper()
+		return post("/v1/login", &sessionpb.LoginRequest{Account: name, Password: password}, wantStatus)
+	}
+	register := func(password string, status int) []byte {
+		t.Helper()
+		return post("/v1/register", &sessionpb.RegisterRequest{Account: account, Password: password}, status)
+	}
+	// 同名注册失败后使用原密码登录，确认注册无法替换已存在的密码。
+	register("short", http.StatusBadRequest)
+	if body := register("test-password", http.StatusCreated); len(body) != 0 {
+		t.Fatal("registration returned an unexpected body")
+	}
+	register("test-password", http.StatusConflict)
+	register("wrong-password", http.StatusConflict)
 	login(account, "wrong-password", http.StatusUnauthorized)
 	login("unknown-"+rand.Text(), "test-password", http.StatusUnauthorized)
 	var ticket sessionpb.LoginReply

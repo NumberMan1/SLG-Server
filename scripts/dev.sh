@@ -190,10 +190,26 @@ mkdir -p "$build_dir"
 (
     cd "$server_dir"
     export GOOS=linux GOARCH="$target_arch" CGO_ENABLED=0
-    for service in gateway login-server game-server; do
+    for service in gateway login-server; do
         go build -mod=readonly -trimpath -o "$build_dir/$service" "./cmd/$service"
     done
 )
+
+# 游戏服由容器内的 C++ 工具链构建，和 Go 服务使用同一目标架构。
+game_source="$server_dir/internal/game-server"
+game_context="$build_dir/internal/game-server"
+deps_dir="$server_dir/.build/game-deps"
+orbit_stage="$game_context/orbit-cpp"
+if command -v cygpath >/dev/null 2>&1; then
+    deps_dir=$(cygpath -m "$deps_dir")
+    orbit_stage=$(cygpath -m "$orbit_stage")
+fi
+cmake "-DSLG_GAME_DEPS_DIR=$deps_dir" -P "$game_source/dependencies.cmake"
+cmake "-DSLG_ORBIT_STAGE_DIR=$orbit_stage" -P "$game_source/orbit.cmake"
+mkdir -p "$game_context/deps" "$game_context/src"
+cp "$deps_dir/json.hpp" "$deps_dir/httplib.h" "$game_context/deps/"
+cp "$game_source/CMakeLists.txt" "$game_source/dependencies.cmake" "$game_source/orbit.cmake" "$game_context/"
+cp "$game_source/src/"* "$game_context/src/"
 
 containerfile="$server_dir/deploy/Containerfile"
 if command -v cygpath >/dev/null 2>&1; then
@@ -213,12 +229,12 @@ fi
 
 # 应用容器通过 Podman 网络 DNS 访问依赖和其他服务。
 set -- run --detach --replace --http-proxy=false --network "$network" --label "$owner_label"
-run_podman "$@" --name "$game_server" --env SLG_GAME_ADDR=0.0.0.0:8081 \
-    --env "SLG_GAME_ADVERTISE_URL=http://$game_server:8081" \
-    --env SLG_ETCD_ENDPOINTS --env "SLG_ETCD_PREFIX=$SLG_ETCD_PREFIX" --env SLG_ETCD_USERNAME --env SLG_ETCD_PASSWORD \
+run_podman "$@" --name "$game_server" --env SLG_GAME_ADDR=0.0.0.0:8081 --env SLG_GAME_RPC_ADDR=0.0.0.0:8083 \
+    --env SLG_WORLD_IDLE_SECONDS \
     "$image" /slg/game-server
 run_podman "$@" --name "$login_server" --env SLG_LOGIN_ADDR=0.0.0.0:8082 \
     --env "SLG_LOGIN_ADVERTISE_URL=http://$login_server:8082" \
+    --env SLG_LOGIN_CONCURRENCY --env SLG_REGISTER_CONCURRENCY --env SLG_REGISTER_RATE_PER_SECOND \
     --env SLG_MYSQL_DSN --env SLG_REDIS_MODE --env SLG_REDIS_ADDRESSES \
     --env SLG_REDIS_USERNAME --env SLG_REDIS_PASSWORD --env SLG_REDIS_KEY_PREFIX \
     --env SLG_ETCD_ENDPOINTS --env "SLG_ETCD_PREFIX=$SLG_ETCD_PREFIX" --env SLG_ETCD_USERNAME --env SLG_ETCD_PASSWORD \
@@ -226,19 +242,18 @@ run_podman "$@" --name "$login_server" --env SLG_LOGIN_ADDR=0.0.0.0:8082 \
 run_podman "$@" --name "$gateway" \
     --publish "127.0.0.1:$http_port:8080" --publish "127.0.0.1:$tcp_port:$tcp_port" \
     --env SLG_GATEWAY_ADDR=0.0.0.0:8080 --env "SLG_GATEWAY_TCP_ADDR=0.0.0.0:$tcp_port" \
+    --env "SLG_GAME_UPSTREAM_URL=http://$game_server:8081" \
+    --env "SLG_GAME_RPC_UPSTREAM=$game_server:8083" \
     --env SLG_REDIS_MODE --env SLG_REDIS_ADDRESSES \
     --env SLG_REDIS_USERNAME --env SLG_REDIS_PASSWORD --env SLG_REDIS_KEY_PREFIX \
     --env SLG_ETCD_ENDPOINTS --env "SLG_ETCD_PREFIX=$SLG_ETCD_PREFIX" --env SLG_ETCD_USERNAME --env SLG_ETCD_PASSWORD \
     "$image" /slg/gateway
 
-# 从宿主机确认网关已经能分别路由到游戏服和登录服。
+# 通过实际网关验证登录依赖、Redis 票据读写及 Orbit 玩法连接。
 url="http://127.0.0.1:$http_port"
 attempt=0
 while [ "$attempt" -lt 20 ]; do
-    if curl --noproxy '*' --fail --silent --max-time 2 "$url/v1/game/health" >/dev/null &&
-        status=$(curl --noproxy '*' --silent --max-time 2 -o /dev/null -w '%{http_code}' \
-            -H 'Content-Type: application/protobuf' --data-binary '' "$url/v1/login") &&
-        [ "$status" = 401 ]; then
+    if curl --noproxy '*' --fail --silent --max-time 3 "$url/readyz" >/dev/null; then
         printf 'SLG is ready (HTTP 127.0.0.1:%s, TCP 127.0.0.1:%s).\n' "$http_port" "$tcp_port"
         exit 0
     fi

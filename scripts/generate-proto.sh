@@ -15,4 +15,4 @@ fi
 
 cd "$server_dir"
 "$protoc" --proto_path=. "--plugin=protoc-gen-go=$go_plugin" --go_out=. \
-    --go_opt=paths=source_relative "--csharp_out=$output" proto/session.proto
+    --go_opt=paths=source_relative "--csharp_out=$output" proto/session.proto proto/world.proto
