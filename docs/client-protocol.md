@@ -2,7 +2,7 @@
 
 ## HTTP 注册、登录与会话认证
 
-Unity 向网关发送 `POST /v1/register`，正文为 `application/protobuf` 编码的 `RegisterRequest`。账号须为 1 至 64 个 UTF-8 字节且首尾无空白。密码至少 8 个字符，最多 72 个 UTF-8 字节。登录服务将账号和 bcrypt 密码摘要写入 MySQL。创建成功返回 `201` 和空正文，随后客户端可登录获取票据。输入无效返回 `400`，媒体类型错误返回 `415`，账号已存在返回 `409`。设置正数 `SLG_REGISTER_RATE_PER_SECOND` 后，越过每秒限额返回 `429` 和 `Retry-After: 1`。注册并发达到 `SLG_REGISTER_CONCURRENCY` 或登录服务不可用时返回 `503`。
+Unity 向网关发送 `POST /v1/register`，正文为 `application/protobuf` 编码的 `RegisterRequest`。注册时账号和密码均须为 1 至 8 个 Unicode 字符，账号首尾无空白。登录服务将账号和 bcrypt 密码摘要写入 MySQL。创建成功返回 `201` 和空正文，随后客户端可登录获取票据。输入无效返回 `400`，媒体类型错误返回 `415`，账号已存在返回 `409`。设置正数 `SLG_REGISTER_RATE_PER_SECOND` 后，越过每秒限额返回 `429` 和 `Retry-After: 1`。注册并发达到 `SLG_REGISTER_CONCURRENCY` 或登录服务不可用时返回 `503`。
 
 1. Unity 向 Go 网关发送 `POST /v1/login`，正文是 `application/protobuf` 编码的 `LoginRequest`。网关通过 etcd 找到登录服务并转发请求。登录服务查询 MySQL、校验密码哈希，再将有效期 30 秒的票据写入 Redis。网关在 `LoginReply` 中返回票据和自己的 TCP 端口。账号或密码错误返回 `401`，登录服务或存储不可用返回 `503`。
 2. Unity 连接登录地址的主机与返回的 TCP 端口，发送 `ConnectRequest`（消息 ID 1），携带票据和协议版本 1。网关用 Redis `GETDEL` 原子地读取账号并消耗票据，然后返回携带账号与会话 ID 的 `ConnectReply`（消息 ID 2）。使用相同 Redis 和票据前缀的网关实例可以共同完成这两步。

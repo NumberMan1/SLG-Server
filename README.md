@@ -83,7 +83,7 @@ sh scripts/dev.sh up
 
 这会在 Podman 网络上创建三个 Redis 主节点和各自的数据卷，并分配全部 16384 个槽位。节点名称为 `slg-dev-redis-1` 至 `slg-dev-redis-3`，端口 `6379` 仅供容器网络访问。该拓扑用于验证分片，三个节点均无副本。脚本重复运行时复用现有节点。应用的 `down` 只处理应用容器。接入其他 Redis Cluster 时，在 `SLG_REDIS_ADDRESSES` 填入种子地址，并确认网关可访问集群返回的各节点地址。
 
-启动脚本会应用 [MySQL 迁移](database/README.md)。玩家可在 Unity 登录页用 **Create account** 注册。填写 `SLG_DEMO_PASSWORD` 时，启动脚本也可以创建 `SLG_DEMO_ACCOUNT` 指定的联调账号，默认为 `demo`。修改 HTTP 端口后，在 Unity 登录场景填写新的网关地址。
+启动脚本会应用 [MySQL 迁移](database/README.md)。玩家可在 Unity 登录页用 **注册账号** 创建账号。填写 `SLG_DEMO_PASSWORD` 时，启动脚本也可以创建 `SLG_DEMO_ACCOUNT` 指定的联调账号，默认为 `demo`。修改 HTTP 端口后，在 Unity 登录场景填写新的网关地址。
 
 启动脚本通过网关的 `/readyz` 检查登录服、MySQL、Redis 票据读写和 Orbit 游戏连接。全部可用时返回 `204`。`/v1/game/health` 返回游戏服的存活状态。联调结束后可执行 `down` 停止并删除 SLG 容器。
 

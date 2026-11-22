@@ -55,8 +55,11 @@ func (a *Accounts) Create(ctx context.Context, account, password string) error {
 
 // Register 校验玩家提交的凭据并创建账号。并发重复注册由 MySQL 唯一键拒绝。
 func (a *Accounts) Register(ctx context.Context, account, password string) error {
+	const maxRegistrationCharacters = 8
+	// 按 Unicode 字符计数，中文与英文均占一个字符。既有账号登录沿用认证规则。
 	if !validCredentials(account, password) || strings.TrimSpace(account) != account ||
-		!utf8.ValidString(password) || utf8.RuneCountInString(password) < 8 {
+		!utf8.ValidString(password) || utf8.RuneCountInString(account) > maxRegistrationCharacters ||
+		utf8.RuneCountInString(password) > maxRegistrationCharacters {
 		return ErrCredentials
 	}
 	return a.insert(ctx, account, password)
