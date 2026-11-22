@@ -20,12 +20,15 @@ enum WorldResult {
   WORLD_RESULT_INVALID_ORDER = 5;
   WORLD_RESULT_WORLD_CHANGED = 6;
   WORLD_RESULT_UNAVAILABLE = 7;
+  WORLD_RESULT_INSUFFICIENT_TROOPS = 8;
 }
 
 // 每名玩家的行军指令 ID 在同一世界内唯一，重试时沿用。
 message MarchOrder {
   string command_id = 1;
   uint32 target_tile_id = 2;
+  // 省略时派出默认兵力，兼容已有客户端。
+  uint32 troops = 3;
 }
 
 // 不携带行军指令时只读取世界状态。
@@ -33,6 +36,8 @@ message WorldRequest {
   string known_instance = 1;
   uint64 known_revision = 2;
   MarchOrder order = 3;
+  // 支持增量同步的客户端始终携带游标，首次进入时为 0。
+  optional uint64 known_battle_id = 4;
 }
 
 // 网关从已认证会话填入账号，再把请求转发给游戏服。
@@ -47,6 +52,7 @@ message WorldTile {
   sint32 r = 3;
   uint32 owner = 4;
   uint32 home = 5;
+  uint32 garrison = 6;
 }
 
 message WorldMarch {
@@ -54,6 +60,22 @@ message WorldMarch {
   uint32 source_tile_id = 2;
   uint32 target_tile_id = 3;
   int64 arrives_at_ms = 4;
+  uint32 troops = 5;
+  bool hostile = 6;
+}
+
+message WorldBattleReport {
+  uint64 battle_id = 1;
+  uint32 target_tile_id = 2;
+  uint32 attacker = 3;
+  uint32 defender = 4;
+  uint32 attacker_troops = 5;
+  uint32 defender_troops = 6;
+  uint32 attacker_survivors = 7;
+  uint32 defender_survivors = 8;
+  bool captured = 9;
+  uint32 rule_version = 10;
+  uint64 seed = 11;
 }
 
 message WorldSnapshot {
@@ -62,6 +84,9 @@ message WorldSnapshot {
   uint32 your_player = 3;
   repeated WorldTile tiles = 4;
   repeated WorldMarch marches = 5;
+  uint32 available_troops = 6;
+  uint32 troop_capacity = 7;
+  WorldBattleReport last_battle = 8;
 }
 
 message WorldReply {
@@ -69,4 +94,7 @@ message WorldReply {
   int64 server_time_ms = 2;
   // 已知实例和版本仍有效时省略快照，客户端保留已显示的状态。
   WorldSnapshot snapshot = 3;
+  // 私有兵力独立更新，即使公共地图版本不变也会返回。
+  optional uint32 available_troops = 4;
+  repeated WorldBattleReport battle_reports = 5;
 }

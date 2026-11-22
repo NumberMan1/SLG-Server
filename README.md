@@ -6,11 +6,11 @@
 | --- | --- |
 | `cmd/gateway`、`cmd/login-server` | Go 进程入口与启动配置 |
 | `internal/gateway`、`internal/loginserver` | 网关路由和账号认证 |
-| `internal/game-server` | C++ 权威世界、地图状态和行军 |
+| `internal/game-server` | C++ 权威世界、地图状态、行军和战果提交 |
 | `infrastructure/httpserver` | Orbit 生命周期装配、进程信号和健康响应 |
 | `infrastructure/logging` | NumberMan1/log 进程日志初始化和关闭 |
 | `infrastructure/storage`、`infrastructure/servicediscovery` | Orbit 的 MySQL、Redis 和 etcd 装配 |
-| `internal/battle-server` | C++ 战斗服可执行目标与 CTest 冒烟用例 |
+| `internal/battle-server` | C++ Orbit 战斗服务、可重放战斗规则和 CTest 用例 |
 | [database](database/README.md) | MySQL 建表与数据迁移 SQL |
 | `testkit` | 集成用例使用的 HTTP 测试装配 |
 | `test-cases` | 通过网关访问游戏服和处理上游不可达的集成用例 |
@@ -70,9 +70,11 @@ sh scripts/dev.sh status
 | `SLG_GAME_RPC_ADDR` | `127.0.0.1:8083` | 直接运行 C++ 游戏服时的 Orbit TCP 监听地址 |
 | `SLG_GAME_UPSTREAM_URL` | `http://127.0.0.1:8081` | 网关调用游戏服健康接口的地址 |
 | `SLG_GAME_RPC_UPSTREAM` | `127.0.0.1:8083` | 网关发送玩法请求的目标。Podman 使用游戏服容器的内网 DNS |
+| `SLG_BATTLE_RPC_ADDR` | `127.0.0.1:8084` | 直接运行战斗服时的 Orbit TCP 监听地址 |
+| `SLG_BATTLE_RPC_UPSTREAM` | `127.0.0.1:8084` | 游戏服发起战斗结算的目标。Podman 使用战斗服容器的内网 DNS |
 | `SLG_WORLD_IDLE_SECONDS` | `60` | 游戏服回收不再请求世界的玩家名额前等待的秒数 |
 
-已有 `gm-dev` 环境时，将前三个 Podman 配置项都设为 `gm-dev`。在本机的 `dev-services` 目录运行 `./services.ps1 redis-up`，再执行 `podman --connection gm-dev start gm-mysql gm-etcd-1 gm-etcd-2 gm-etcd-3`。在 SLG 的 `.env` 填入该集群的 `SLG_REDIS_PASSWORD`。脚本自动选用 `gm-redis-1:6379`、`gm-redis-2:6379` 和 `gm-redis-3:6379`。网关只向宿主机回环地址公开 HTTP 和 TCP 端口。登录服的 `8082`、游戏服的 HTTP `8081` 和 Orbit TCP `8083` 均在容器网络内使用。
+已有 `gm-dev` 环境时，将前三个 Podman 配置项都设为 `gm-dev`。在本机的 `dev-services` 目录运行 `./services.ps1 redis-up`，再执行 `podman --connection gm-dev start gm-mysql gm-etcd-1 gm-etcd-2 gm-etcd-3`。在 SLG 的 `.env` 填入该集群的 `SLG_REDIS_PASSWORD`。脚本自动选用 `gm-redis-1:6379`、`gm-redis-2:6379` 和 `gm-redis-3:6379`。网关只向宿主机回环地址公开 HTTP 和 TCP 端口。登录服的 `8082`、游戏服的 HTTP `8081` 和 Orbit TCP `8083`、战斗服的 Orbit TCP `8084` 均在容器网络内使用。
 
 使用独立的 `slg-dev` 网络时，在 `.env` 设置 `SLG_REDIS_MODE=cluster` 和 `SLG_REDIS_PASSWORD`，然后执行以下命令。
 
@@ -85,7 +87,7 @@ sh scripts/dev.sh up
 
 启动脚本会应用 [MySQL 迁移](database/README.md)。玩家可在 Unity 登录页用 **注册账号** 创建账号。填写 `SLG_DEMO_PASSWORD` 时，启动脚本也可以创建 `SLG_DEMO_ACCOUNT` 指定的联调账号，默认为 `demo`。修改 HTTP 端口后，在 Unity 登录场景填写新的网关地址。
 
-启动脚本通过网关的 `/readyz` 检查登录服、MySQL、Redis 票据读写和 Orbit 游戏连接。全部可用时返回 `204`。`/v1/game/health` 返回游戏服的存活状态。联调结束后可执行 `down` 停止并删除 SLG 容器。
+启动脚本通过网关的 `/readyz` 检查登录服、MySQL、Redis 票据读写、Orbit 游戏连接和战斗结算连接。全部可用时返回 `204`。`/v1/game/health` 返回游戏服的存活状态。联调结束后可执行 `down` 停止并删除 SLG 容器。
 
 ```sh
 curl -i http://127.0.0.1:8080/readyz
@@ -93,9 +95,9 @@ curl http://127.0.0.1:8080/v1/game/health
 sh scripts/dev.sh down
 ```
 
-登录服务通过 MySQL 校验密码并把一次性票据写入 Redis，通过 etcd 公布给网关。认证通过后，C++ 游戏服维护共享地图、行军和占地。两个不同账号分别取得出生地。需要第二个联调账号时，在 `.env` 中将 `SLG_DEMO_ACCOUNT` 和 `SLG_DEMO_PASSWORD` 设为第二个账号，再运行 `scripts/dev.sh up`。已存在的账号可以继续使用。C++ 战斗服目前用 CMake 和 CTest 验证启动。
+登录服务通过 MySQL 校验密码并把一次性票据写入 Redis，通过 etcd 公布给网关。认证通过后，两个账号分别取得出生地。Unity 可直接创建第二个账号，也可用 `SLG_DEMO_ACCOUNT` 和 `SLG_DEMO_PASSWORD` 配置联调账号。占领中立地块后可以攻打相邻敌方领地。战斗服计算双方存活兵力，游戏服提交战果，双方看到同一份战报。
 
-Go 进程通过 NumberMan1/log 把结构化 JSON 写到标准输出，日志用 `service` 标识进程。Podman 联调时可用 `podman logs slg-dev-gateway`、`podman logs slg-dev-login-server` 或 `podman logs slg-dev-game-server` 查看。
+Go 进程通过 NumberMan1/log 把结构化 JSON 写到标准输出，日志用 `service` 标识进程。Podman 联调时可用 `podman logs <容器名>` 查看，容器分别为 `slg-dev-gateway`、`slg-dev-login-server`、`slg-dev-game-server` 和 `slg-dev-battle-server`。
 
 浏览器的长连接入口是网关 HTTP 端口上的 `/v1/session` WebSocket。在线站点使用 HTTPS 和 WSS，在反向代理处终止 TLS，并为静态页面、HTTP 登录和 WebSocket 配置同一域名。反向代理应保留原始 Host，并转发 WebSocket Upgrade。直接运行网关时可通过 `SLG_WEB_ROOT` 提供客户端未压缩 Web 构建。Podman 模式可由前置 Web 服务器提供这些静态文件。
 
@@ -105,14 +107,14 @@ Go 进程通过 NumberMan1/log 把结构化 JSON 写到标准输出，日志用 
 
 VS Code 的 Go 网关、登录服和 Podman 共用 `.env`。在 `.env` 明确填写 `SLG_REDIS_ADDRESSES=gm-redis-1:6379,gm-redis-2:6379,gm-redis-3:6379`，并按上文启动 `gm-dev` 的 MySQL、etcd 和 Redis。Go 启动项在 `launch.json` 的 `env` 中覆盖 `SLG_ETCD_ENDPOINTS` 为宿主机回环地址，并用独立的 `SLG_ETCD_PREFIX=/slg/local-debug/services` 隔离调试注册。登录服务通过 `SLG_MYSQL_ADDRESS=127.0.0.1:3306` 复用同一 MySQL 连接串。登录服务和网关通过 `SLG_REDIS_DIAL_ADDRESSES=gm-redis-1:6379=127.0.0.1:16301,gm-redis-2:6379=127.0.0.1:16302,gm-redis-3:6379=127.0.0.1:16303` 访问同一 Redis Cluster，调试票据使用 `SLG_REDIS_KEY_PREFIX=slg:local-debug:login`。
 
-- 在 **Run and Debug** 选 **SLG Stack**，按 **F5** 启动三个本机进程。Unity 联调时填写 `http://127.0.0.1:28080`，网关通过登录响应返回 TCP 端口 `29090`。游戏服使用 `28081` 探活和 `28083` 处理玩法，登录服务监听 `28082`。单独调试可选 **Go: Gateway**、**Go: Login Server** 或 **C++: Game Server**。
+- 在 **Run and Debug** 选 **SLG Stack**，按 **F5** 启动四个本机进程。Unity 联调时填写 `http://127.0.0.1:28080`，网关通过登录响应返回 TCP 端口 `29090`。登录服监听 `28082`，游戏服使用 `28081` 探活和 `28083` 处理玩法，战斗服在 `28084` 处理内网结算。四个进程均可单独启动调试。
 - 用 **Go: Integration Tests** 在 `test-cases` 中打断点。通过 **Tasks: Run Task** 运行 **Go: Test All** 或 **SLG: Verify Server**。
 - 用 **C++: Battle Server Healthcheck** 调试 `--healthcheck`。启动前任务用 CMake 和 Ninja 构建 Debug 版本。Windows 和 Linux 需要 PATH 中的 GDB，macOS 需要 LLDB-MI。
 - **Podman: Start SLG**、**Podman: Status** 和 **Podman: Stop SLG** 调用 `scripts/dev.sh`，沿用 `.env` 的 `gm-dev` 配置和默认 HTTP 端口 `8080`。Windows 任务使用 Git for Windows 自带的 `sh`。
 
 ## 运行校验
 
-在服务端仓库根目录执行。游戏服和战斗服使用 CMake 3.20 或更新版本。游戏服沿用 Orbit 的 C++23 要求，编译器标准库须提供 `std::jthread` 和 `std::stop_token`。战斗服使用 C++20。有 Ninja 时脚本默认使用 Ninja，也可以通过 `SLG_CMAKE_GENERATOR` 指定生成器。脚本编译游戏服并将它传给跨进程联通用例。战斗服构建目录可用 `SLG_BUILD_DIR` 覆盖。
+在服务端仓库根目录执行。两个 C++ 服务使用 CMake 3.20 或更新版本，并沿用 Orbit 的 C++23 要求。战斗规则库使用 C++20。有 Ninja 时脚本默认使用 Ninja，也可以通过 `SLG_CMAKE_GENERATOR` 指定生成器。脚本构建游戏服及战斗服，并用真实进程运行跨进程联通用例。可用 `SLG_GAME_BUILD_DIR` 和 `SLG_BUILD_DIR` 分别覆盖游戏服和战斗服的构建目录。
 
 ```sh
 sh scripts/verify.sh
@@ -132,7 +134,7 @@ Ninja 单配置构建在 Windows 上可运行 `./.build/internal/battle/battle-s
 
 ## GitHub Actions
 
-Server CI 在 `develop`、`master` 的推送和目标为这两个分支的同仓 PR 上运行，也支持手动运行。它使用临时 MySQL、单机 Redis 和 etcd 验证登录转发、TCP 票据和服务发现，构建 C++ 游戏服后运行共享地图联通用例，检查 C++ 战斗服并构建两个 Go 进程。
+Server CI 在 `develop`、`master` 的推送和目标为这两个分支的同仓 PR 上运行，也支持手动运行。它使用临时 MySQL、单机 Redis 和 etcd 验证登录转发、TCP 票据和服务发现，构建 C++ 游戏服和战斗服后验证共享地图、战斗结果和战斗服重连，并构建两个 Go 进程。
 
 本地可在校验命令前提供 `SLG_TEST_MYSQL_DSN`、`SLG_TEST_REDIS_ADDRESSES`、`SLG_TEST_REDIS_PASSWORD` 和 `SLG_TEST_ETCD_ENDPOINTS`，复用真实中间件。Redis 集群测试额外设置 `SLG_TEST_REDIS_MODE=cluster`。登录中间件用例会应用建表迁移并删除本次创建的测试账号。
 

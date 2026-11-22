@@ -73,14 +73,15 @@ func (WorldMessageId) EnumDescriptor() ([]byte, []int) {
 type WorldResult int32
 
 const (
-	WorldResult_WORLD_RESULT_OK               WorldResult = 0
-	WorldResult_WORLD_RESULT_FULL             WorldResult = 1
-	WorldResult_WORLD_RESULT_INVALID_TARGET   WorldResult = 2
-	WorldResult_WORLD_RESULT_ALREADY_MARCHING WorldResult = 3
-	WorldResult_WORLD_RESULT_RESERVED         WorldResult = 4
-	WorldResult_WORLD_RESULT_INVALID_ORDER    WorldResult = 5
-	WorldResult_WORLD_RESULT_WORLD_CHANGED    WorldResult = 6
-	WorldResult_WORLD_RESULT_UNAVAILABLE      WorldResult = 7
+	WorldResult_WORLD_RESULT_OK                  WorldResult = 0
+	WorldResult_WORLD_RESULT_FULL                WorldResult = 1
+	WorldResult_WORLD_RESULT_INVALID_TARGET      WorldResult = 2
+	WorldResult_WORLD_RESULT_ALREADY_MARCHING    WorldResult = 3
+	WorldResult_WORLD_RESULT_RESERVED            WorldResult = 4
+	WorldResult_WORLD_RESULT_INVALID_ORDER       WorldResult = 5
+	WorldResult_WORLD_RESULT_WORLD_CHANGED       WorldResult = 6
+	WorldResult_WORLD_RESULT_UNAVAILABLE         WorldResult = 7
+	WorldResult_WORLD_RESULT_INSUFFICIENT_TROOPS WorldResult = 8
 )
 
 // Enum value maps for WorldResult.
@@ -94,16 +95,18 @@ var (
 		5: "WORLD_RESULT_INVALID_ORDER",
 		6: "WORLD_RESULT_WORLD_CHANGED",
 		7: "WORLD_RESULT_UNAVAILABLE",
+		8: "WORLD_RESULT_INSUFFICIENT_TROOPS",
 	}
 	WorldResult_value = map[string]int32{
-		"WORLD_RESULT_OK":               0,
-		"WORLD_RESULT_FULL":             1,
-		"WORLD_RESULT_INVALID_TARGET":   2,
-		"WORLD_RESULT_ALREADY_MARCHING": 3,
-		"WORLD_RESULT_RESERVED":         4,
-		"WORLD_RESULT_INVALID_ORDER":    5,
-		"WORLD_RESULT_WORLD_CHANGED":    6,
-		"WORLD_RESULT_UNAVAILABLE":      7,
+		"WORLD_RESULT_OK":                  0,
+		"WORLD_RESULT_FULL":                1,
+		"WORLD_RESULT_INVALID_TARGET":      2,
+		"WORLD_RESULT_ALREADY_MARCHING":    3,
+		"WORLD_RESULT_RESERVED":            4,
+		"WORLD_RESULT_INVALID_ORDER":       5,
+		"WORLD_RESULT_WORLD_CHANGED":       6,
+		"WORLD_RESULT_UNAVAILABLE":         7,
+		"WORLD_RESULT_INSUFFICIENT_TROOPS": 8,
 	}
 )
 
@@ -136,9 +139,11 @@ func (WorldResult) EnumDescriptor() ([]byte, []int) {
 
 // 每名玩家的行军指令 ID 在同一世界内唯一，重试时沿用。
 type MarchOrder struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	CommandId     string                 `protobuf:"bytes,1,opt,name=command_id,json=commandId,proto3" json:"command_id,omitempty"`
-	TargetTileId  uint32                 `protobuf:"varint,2,opt,name=target_tile_id,json=targetTileId,proto3" json:"target_tile_id,omitempty"`
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	CommandId    string                 `protobuf:"bytes,1,opt,name=command_id,json=commandId,proto3" json:"command_id,omitempty"`
+	TargetTileId uint32                 `protobuf:"varint,2,opt,name=target_tile_id,json=targetTileId,proto3" json:"target_tile_id,omitempty"`
+	// 省略时派出默认兵力，兼容已有客户端。
+	Troops        uint32 `protobuf:"varint,3,opt,name=troops,proto3" json:"troops,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -187,12 +192,21 @@ func (x *MarchOrder) GetTargetTileId() uint32 {
 	return 0
 }
 
+func (x *MarchOrder) GetTroops() uint32 {
+	if x != nil {
+		return x.Troops
+	}
+	return 0
+}
+
 // 不携带行军指令时只读取世界状态。
 type WorldRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	KnownInstance string                 `protobuf:"bytes,1,opt,name=known_instance,json=knownInstance,proto3" json:"known_instance,omitempty"`
 	KnownRevision uint64                 `protobuf:"varint,2,opt,name=known_revision,json=knownRevision,proto3" json:"known_revision,omitempty"`
 	Order         *MarchOrder            `protobuf:"bytes,3,opt,name=order,proto3" json:"order,omitempty"`
+	// 支持增量同步的客户端始终携带游标，首次进入时为 0。
+	KnownBattleId *uint64 `protobuf:"varint,4,opt,name=known_battle_id,json=knownBattleId,proto3,oneof" json:"known_battle_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -246,6 +260,13 @@ func (x *WorldRequest) GetOrder() *MarchOrder {
 		return x.Order
 	}
 	return nil
+}
+
+func (x *WorldRequest) GetKnownBattleId() uint64 {
+	if x != nil && x.KnownBattleId != nil {
+		return *x.KnownBattleId
+	}
+	return 0
 }
 
 // 网关从已认证会话填入账号，再把请求转发给游戏服。
@@ -308,6 +329,7 @@ type WorldTile struct {
 	R             int32                  `protobuf:"zigzag32,3,opt,name=r,proto3" json:"r,omitempty"`
 	Owner         uint32                 `protobuf:"varint,4,opt,name=owner,proto3" json:"owner,omitempty"`
 	Home          uint32                 `protobuf:"varint,5,opt,name=home,proto3" json:"home,omitempty"`
+	Garrison      uint32                 `protobuf:"varint,6,opt,name=garrison,proto3" json:"garrison,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -377,12 +399,21 @@ func (x *WorldTile) GetHome() uint32 {
 	return 0
 }
 
+func (x *WorldTile) GetGarrison() uint32 {
+	if x != nil {
+		return x.Garrison
+	}
+	return 0
+}
+
 type WorldMarch struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Player        uint32                 `protobuf:"varint,1,opt,name=player,proto3" json:"player,omitempty"`
 	SourceTileId  uint32                 `protobuf:"varint,2,opt,name=source_tile_id,json=sourceTileId,proto3" json:"source_tile_id,omitempty"`
 	TargetTileId  uint32                 `protobuf:"varint,3,opt,name=target_tile_id,json=targetTileId,proto3" json:"target_tile_id,omitempty"`
 	ArrivesAtMs   int64                  `protobuf:"varint,4,opt,name=arrives_at_ms,json=arrivesAtMs,proto3" json:"arrives_at_ms,omitempty"`
+	Troops        uint32                 `protobuf:"varint,5,opt,name=troops,proto3" json:"troops,omitempty"`
+	Hostile       bool                   `protobuf:"varint,6,opt,name=hostile,proto3" json:"hostile,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -445,20 +476,161 @@ func (x *WorldMarch) GetArrivesAtMs() int64 {
 	return 0
 }
 
+func (x *WorldMarch) GetTroops() uint32 {
+	if x != nil {
+		return x.Troops
+	}
+	return 0
+}
+
+func (x *WorldMarch) GetHostile() bool {
+	if x != nil {
+		return x.Hostile
+	}
+	return false
+}
+
+type WorldBattleReport struct {
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	BattleId          uint64                 `protobuf:"varint,1,opt,name=battle_id,json=battleId,proto3" json:"battle_id,omitempty"`
+	TargetTileId      uint32                 `protobuf:"varint,2,opt,name=target_tile_id,json=targetTileId,proto3" json:"target_tile_id,omitempty"`
+	Attacker          uint32                 `protobuf:"varint,3,opt,name=attacker,proto3" json:"attacker,omitempty"`
+	Defender          uint32                 `protobuf:"varint,4,opt,name=defender,proto3" json:"defender,omitempty"`
+	AttackerTroops    uint32                 `protobuf:"varint,5,opt,name=attacker_troops,json=attackerTroops,proto3" json:"attacker_troops,omitempty"`
+	DefenderTroops    uint32                 `protobuf:"varint,6,opt,name=defender_troops,json=defenderTroops,proto3" json:"defender_troops,omitempty"`
+	AttackerSurvivors uint32                 `protobuf:"varint,7,opt,name=attacker_survivors,json=attackerSurvivors,proto3" json:"attacker_survivors,omitempty"`
+	DefenderSurvivors uint32                 `protobuf:"varint,8,opt,name=defender_survivors,json=defenderSurvivors,proto3" json:"defender_survivors,omitempty"`
+	Captured          bool                   `protobuf:"varint,9,opt,name=captured,proto3" json:"captured,omitempty"`
+	RuleVersion       uint32                 `protobuf:"varint,10,opt,name=rule_version,json=ruleVersion,proto3" json:"rule_version,omitempty"`
+	Seed              uint64                 `protobuf:"varint,11,opt,name=seed,proto3" json:"seed,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *WorldBattleReport) Reset() {
+	*x = WorldBattleReport{}
+	mi := &file_proto_world_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WorldBattleReport) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WorldBattleReport) ProtoMessage() {}
+
+func (x *WorldBattleReport) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_world_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WorldBattleReport.ProtoReflect.Descriptor instead.
+func (*WorldBattleReport) Descriptor() ([]byte, []int) {
+	return file_proto_world_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *WorldBattleReport) GetBattleId() uint64 {
+	if x != nil {
+		return x.BattleId
+	}
+	return 0
+}
+
+func (x *WorldBattleReport) GetTargetTileId() uint32 {
+	if x != nil {
+		return x.TargetTileId
+	}
+	return 0
+}
+
+func (x *WorldBattleReport) GetAttacker() uint32 {
+	if x != nil {
+		return x.Attacker
+	}
+	return 0
+}
+
+func (x *WorldBattleReport) GetDefender() uint32 {
+	if x != nil {
+		return x.Defender
+	}
+	return 0
+}
+
+func (x *WorldBattleReport) GetAttackerTroops() uint32 {
+	if x != nil {
+		return x.AttackerTroops
+	}
+	return 0
+}
+
+func (x *WorldBattleReport) GetDefenderTroops() uint32 {
+	if x != nil {
+		return x.DefenderTroops
+	}
+	return 0
+}
+
+func (x *WorldBattleReport) GetAttackerSurvivors() uint32 {
+	if x != nil {
+		return x.AttackerSurvivors
+	}
+	return 0
+}
+
+func (x *WorldBattleReport) GetDefenderSurvivors() uint32 {
+	if x != nil {
+		return x.DefenderSurvivors
+	}
+	return 0
+}
+
+func (x *WorldBattleReport) GetCaptured() bool {
+	if x != nil {
+		return x.Captured
+	}
+	return false
+}
+
+func (x *WorldBattleReport) GetRuleVersion() uint32 {
+	if x != nil {
+		return x.RuleVersion
+	}
+	return 0
+}
+
+func (x *WorldBattleReport) GetSeed() uint64 {
+	if x != nil {
+		return x.Seed
+	}
+	return 0
+}
+
 type WorldSnapshot struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Instance      string                 `protobuf:"bytes,1,opt,name=instance,proto3" json:"instance,omitempty"`
-	Revision      uint64                 `protobuf:"varint,2,opt,name=revision,proto3" json:"revision,omitempty"`
-	YourPlayer    uint32                 `protobuf:"varint,3,opt,name=your_player,json=yourPlayer,proto3" json:"your_player,omitempty"`
-	Tiles         []*WorldTile           `protobuf:"bytes,4,rep,name=tiles,proto3" json:"tiles,omitempty"`
-	Marches       []*WorldMarch          `protobuf:"bytes,5,rep,name=marches,proto3" json:"marches,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	Instance        string                 `protobuf:"bytes,1,opt,name=instance,proto3" json:"instance,omitempty"`
+	Revision        uint64                 `protobuf:"varint,2,opt,name=revision,proto3" json:"revision,omitempty"`
+	YourPlayer      uint32                 `protobuf:"varint,3,opt,name=your_player,json=yourPlayer,proto3" json:"your_player,omitempty"`
+	Tiles           []*WorldTile           `protobuf:"bytes,4,rep,name=tiles,proto3" json:"tiles,omitempty"`
+	Marches         []*WorldMarch          `protobuf:"bytes,5,rep,name=marches,proto3" json:"marches,omitempty"`
+	AvailableTroops uint32                 `protobuf:"varint,6,opt,name=available_troops,json=availableTroops,proto3" json:"available_troops,omitempty"`
+	TroopCapacity   uint32                 `protobuf:"varint,7,opt,name=troop_capacity,json=troopCapacity,proto3" json:"troop_capacity,omitempty"`
+	LastBattle      *WorldBattleReport     `protobuf:"bytes,8,opt,name=last_battle,json=lastBattle,proto3" json:"last_battle,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *WorldSnapshot) Reset() {
 	*x = WorldSnapshot{}
-	mi := &file_proto_world_proto_msgTypes[5]
+	mi := &file_proto_world_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -470,7 +642,7 @@ func (x *WorldSnapshot) String() string {
 func (*WorldSnapshot) ProtoMessage() {}
 
 func (x *WorldSnapshot) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_world_proto_msgTypes[5]
+	mi := &file_proto_world_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -483,7 +655,7 @@ func (x *WorldSnapshot) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WorldSnapshot.ProtoReflect.Descriptor instead.
 func (*WorldSnapshot) Descriptor() ([]byte, []int) {
-	return file_proto_world_proto_rawDescGZIP(), []int{5}
+	return file_proto_world_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *WorldSnapshot) GetInstance() string {
@@ -521,19 +693,43 @@ func (x *WorldSnapshot) GetMarches() []*WorldMarch {
 	return nil
 }
 
+func (x *WorldSnapshot) GetAvailableTroops() uint32 {
+	if x != nil {
+		return x.AvailableTroops
+	}
+	return 0
+}
+
+func (x *WorldSnapshot) GetTroopCapacity() uint32 {
+	if x != nil {
+		return x.TroopCapacity
+	}
+	return 0
+}
+
+func (x *WorldSnapshot) GetLastBattle() *WorldBattleReport {
+	if x != nil {
+		return x.LastBattle
+	}
+	return nil
+}
+
 type WorldReply struct {
 	state        protoimpl.MessageState `protogen:"open.v1"`
 	Result       WorldResult            `protobuf:"varint,1,opt,name=result,proto3,enum=slg.world.v1.WorldResult" json:"result,omitempty"`
 	ServerTimeMs int64                  `protobuf:"varint,2,opt,name=server_time_ms,json=serverTimeMs,proto3" json:"server_time_ms,omitempty"`
 	// 已知实例和版本仍有效时省略快照，客户端保留已显示的状态。
-	Snapshot      *WorldSnapshot `protobuf:"bytes,3,opt,name=snapshot,proto3" json:"snapshot,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Snapshot *WorldSnapshot `protobuf:"bytes,3,opt,name=snapshot,proto3" json:"snapshot,omitempty"`
+	// 私有兵力独立更新，即使公共地图版本不变也会返回。
+	AvailableTroops *uint32              `protobuf:"varint,4,opt,name=available_troops,json=availableTroops,proto3,oneof" json:"available_troops,omitempty"`
+	BattleReports   []*WorldBattleReport `protobuf:"bytes,5,rep,name=battle_reports,json=battleReports,proto3" json:"battle_reports,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *WorldReply) Reset() {
 	*x = WorldReply{}
-	mi := &file_proto_world_proto_msgTypes[6]
+	mi := &file_proto_world_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -545,7 +741,7 @@ func (x *WorldReply) String() string {
 func (*WorldReply) ProtoMessage() {}
 
 func (x *WorldReply) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_world_proto_msgTypes[6]
+	mi := &file_proto_world_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -558,7 +754,7 @@ func (x *WorldReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WorldReply.ProtoReflect.Descriptor instead.
 func (*WorldReply) Descriptor() ([]byte, []int) {
-	return file_proto_world_proto_rawDescGZIP(), []int{6}
+	return file_proto_world_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *WorldReply) GetResult() WorldResult {
@@ -582,51 +778,91 @@ func (x *WorldReply) GetSnapshot() *WorldSnapshot {
 	return nil
 }
 
+func (x *WorldReply) GetAvailableTroops() uint32 {
+	if x != nil && x.AvailableTroops != nil {
+		return *x.AvailableTroops
+	}
+	return 0
+}
+
+func (x *WorldReply) GetBattleReports() []*WorldBattleReport {
+	if x != nil {
+		return x.BattleReports
+	}
+	return nil
+}
+
 var File_proto_world_proto protoreflect.FileDescriptor
 
 const file_proto_world_proto_rawDesc = "" +
 	"\n" +
-	"\x11proto/world.proto\x12\fslg.world.v1\"Q\n" +
+	"\x11proto/world.proto\x12\fslg.world.v1\"i\n" +
 	"\n" +
 	"MarchOrder\x12\x1d\n" +
 	"\n" +
 	"command_id\x18\x01 \x01(\tR\tcommandId\x12$\n" +
-	"\x0etarget_tile_id\x18\x02 \x01(\rR\ftargetTileId\"\x8c\x01\n" +
+	"\x0etarget_tile_id\x18\x02 \x01(\rR\ftargetTileId\x12\x16\n" +
+	"\x06troops\x18\x03 \x01(\rR\x06troops\"\xcd\x01\n" +
 	"\fWorldRequest\x12%\n" +
 	"\x0eknown_instance\x18\x01 \x01(\tR\rknownInstance\x12%\n" +
 	"\x0eknown_revision\x18\x02 \x01(\x04R\rknownRevision\x12.\n" +
-	"\x05order\x18\x03 \x01(\v2\x18.slg.world.v1.MarchOrderR\x05order\"^\n" +
+	"\x05order\x18\x03 \x01(\v2\x18.slg.world.v1.MarchOrderR\x05order\x12+\n" +
+	"\x0fknown_battle_id\x18\x04 \x01(\x04H\x00R\rknownBattleId\x88\x01\x01B\x12\n" +
+	"\x10_known_battle_id\"^\n" +
 	"\fWorldCommand\x12\x18\n" +
 	"\aaccount\x18\x01 \x01(\tR\aaccount\x124\n" +
-	"\arequest\x18\x02 \x01(\v2\x1a.slg.world.v1.WorldRequestR\arequest\"a\n" +
+	"\arequest\x18\x02 \x01(\v2\x1a.slg.world.v1.WorldRequestR\arequest\"}\n" +
 	"\tWorldTile\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\rR\x02id\x12\f\n" +
 	"\x01q\x18\x02 \x01(\x11R\x01q\x12\f\n" +
 	"\x01r\x18\x03 \x01(\x11R\x01r\x12\x14\n" +
 	"\x05owner\x18\x04 \x01(\rR\x05owner\x12\x12\n" +
-	"\x04home\x18\x05 \x01(\rR\x04home\"\x94\x01\n" +
+	"\x04home\x18\x05 \x01(\rR\x04home\x12\x1a\n" +
+	"\bgarrison\x18\x06 \x01(\rR\bgarrison\"\xc6\x01\n" +
 	"\n" +
 	"WorldMarch\x12\x16\n" +
 	"\x06player\x18\x01 \x01(\rR\x06player\x12$\n" +
 	"\x0esource_tile_id\x18\x02 \x01(\rR\fsourceTileId\x12$\n" +
 	"\x0etarget_tile_id\x18\x03 \x01(\rR\ftargetTileId\x12\"\n" +
-	"\rarrives_at_ms\x18\x04 \x01(\x03R\varrivesAtMs\"\xcb\x01\n" +
+	"\rarrives_at_ms\x18\x04 \x01(\x03R\varrivesAtMs\x12\x16\n" +
+	"\x06troops\x18\x05 \x01(\rR\x06troops\x12\x18\n" +
+	"\ahostile\x18\x06 \x01(\bR\ahostile\"\x91\x03\n" +
+	"\x11WorldBattleReport\x12\x1b\n" +
+	"\tbattle_id\x18\x01 \x01(\x04R\bbattleId\x12$\n" +
+	"\x0etarget_tile_id\x18\x02 \x01(\rR\ftargetTileId\x12\x1a\n" +
+	"\battacker\x18\x03 \x01(\rR\battacker\x12\x1a\n" +
+	"\bdefender\x18\x04 \x01(\rR\bdefender\x12'\n" +
+	"\x0fattacker_troops\x18\x05 \x01(\rR\x0eattackerTroops\x12'\n" +
+	"\x0fdefender_troops\x18\x06 \x01(\rR\x0edefenderTroops\x12-\n" +
+	"\x12attacker_survivors\x18\a \x01(\rR\x11attackerSurvivors\x12-\n" +
+	"\x12defender_survivors\x18\b \x01(\rR\x11defenderSurvivors\x12\x1a\n" +
+	"\bcaptured\x18\t \x01(\bR\bcaptured\x12!\n" +
+	"\frule_version\x18\n" +
+	" \x01(\rR\vruleVersion\x12\x12\n" +
+	"\x04seed\x18\v \x01(\x04R\x04seed\"\xdf\x02\n" +
 	"\rWorldSnapshot\x12\x1a\n" +
 	"\binstance\x18\x01 \x01(\tR\binstance\x12\x1a\n" +
 	"\brevision\x18\x02 \x01(\x04R\brevision\x12\x1f\n" +
 	"\vyour_player\x18\x03 \x01(\rR\n" +
 	"yourPlayer\x12-\n" +
 	"\x05tiles\x18\x04 \x03(\v2\x17.slg.world.v1.WorldTileR\x05tiles\x122\n" +
-	"\amarches\x18\x05 \x03(\v2\x18.slg.world.v1.WorldMarchR\amarches\"\x9e\x01\n" +
+	"\amarches\x18\x05 \x03(\v2\x18.slg.world.v1.WorldMarchR\amarches\x12)\n" +
+	"\x10available_troops\x18\x06 \x01(\rR\x0favailableTroops\x12%\n" +
+	"\x0etroop_capacity\x18\a \x01(\rR\rtroopCapacity\x12@\n" +
+	"\vlast_battle\x18\b \x01(\v2\x1f.slg.world.v1.WorldBattleReportR\n" +
+	"lastBattle\"\xab\x02\n" +
 	"\n" +
 	"WorldReply\x121\n" +
 	"\x06result\x18\x01 \x01(\x0e2\x19.slg.world.v1.WorldResultR\x06result\x12$\n" +
 	"\x0eserver_time_ms\x18\x02 \x01(\x03R\fserverTimeMs\x127\n" +
-	"\bsnapshot\x18\x03 \x01(\v2\x1b.slg.world.v1.WorldSnapshotR\bsnapshot*l\n" +
+	"\bsnapshot\x18\x03 \x01(\v2\x1b.slg.world.v1.WorldSnapshotR\bsnapshot\x12.\n" +
+	"\x10available_troops\x18\x04 \x01(\rH\x00R\x0favailableTroops\x88\x01\x01\x12F\n" +
+	"\x0ebattle_reports\x18\x05 \x03(\v2\x1f.slg.world.v1.WorldBattleReportR\rbattleReportsB\x13\n" +
+	"\x11_available_troops*l\n" +
 	"\x0eWorldMessageId\x12 \n" +
 	"\x1cWORLD_MESSAGE_ID_UNSPECIFIED\x10\x00\x12\x1c\n" +
 	"\x18WORLD_MESSAGE_ID_REQUEST\x10\x03\x12\x1a\n" +
-	"\x16WORLD_MESSAGE_ID_REPLY\x10\x04*\xf6\x01\n" +
+	"\x16WORLD_MESSAGE_ID_REPLY\x10\x04*\x9c\x02\n" +
 	"\vWorldResult\x12\x13\n" +
 	"\x0fWORLD_RESULT_OK\x10\x00\x12\x15\n" +
 	"\x11WORLD_RESULT_FULL\x10\x01\x12\x1f\n" +
@@ -635,7 +871,8 @@ const file_proto_world_proto_rawDesc = "" +
 	"\x15WORLD_RESULT_RESERVED\x10\x04\x12\x1e\n" +
 	"\x1aWORLD_RESULT_INVALID_ORDER\x10\x05\x12\x1e\n" +
 	"\x1aWORLD_RESULT_WORLD_CHANGED\x10\x06\x12\x1c\n" +
-	"\x18WORLD_RESULT_UNAVAILABLE\x10\aBAZ0github.com/NumberMan1/slg-server/proto;sessionpb\xaa\x02\fSlg.Protocolb\x06proto3"
+	"\x18WORLD_RESULT_UNAVAILABLE\x10\a\x12$\n" +
+	" WORLD_RESULT_INSUFFICIENT_TROOPS\x10\bBAZ0github.com/NumberMan1/slg-server/proto;sessionpb\xaa\x02\fSlg.Protocolb\x06proto3"
 
 var (
 	file_proto_world_proto_rawDescOnce sync.Once
@@ -650,30 +887,33 @@ func file_proto_world_proto_rawDescGZIP() []byte {
 }
 
 var file_proto_world_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_proto_world_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
+var file_proto_world_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
 var file_proto_world_proto_goTypes = []any{
-	(WorldMessageId)(0),   // 0: slg.world.v1.WorldMessageId
-	(WorldResult)(0),      // 1: slg.world.v1.WorldResult
-	(*MarchOrder)(nil),    // 2: slg.world.v1.MarchOrder
-	(*WorldRequest)(nil),  // 3: slg.world.v1.WorldRequest
-	(*WorldCommand)(nil),  // 4: slg.world.v1.WorldCommand
-	(*WorldTile)(nil),     // 5: slg.world.v1.WorldTile
-	(*WorldMarch)(nil),    // 6: slg.world.v1.WorldMarch
-	(*WorldSnapshot)(nil), // 7: slg.world.v1.WorldSnapshot
-	(*WorldReply)(nil),    // 8: slg.world.v1.WorldReply
+	(WorldMessageId)(0),       // 0: slg.world.v1.WorldMessageId
+	(WorldResult)(0),          // 1: slg.world.v1.WorldResult
+	(*MarchOrder)(nil),        // 2: slg.world.v1.MarchOrder
+	(*WorldRequest)(nil),      // 3: slg.world.v1.WorldRequest
+	(*WorldCommand)(nil),      // 4: slg.world.v1.WorldCommand
+	(*WorldTile)(nil),         // 5: slg.world.v1.WorldTile
+	(*WorldMarch)(nil),        // 6: slg.world.v1.WorldMarch
+	(*WorldBattleReport)(nil), // 7: slg.world.v1.WorldBattleReport
+	(*WorldSnapshot)(nil),     // 8: slg.world.v1.WorldSnapshot
+	(*WorldReply)(nil),        // 9: slg.world.v1.WorldReply
 }
 var file_proto_world_proto_depIdxs = []int32{
 	2, // 0: slg.world.v1.WorldRequest.order:type_name -> slg.world.v1.MarchOrder
 	3, // 1: slg.world.v1.WorldCommand.request:type_name -> slg.world.v1.WorldRequest
 	5, // 2: slg.world.v1.WorldSnapshot.tiles:type_name -> slg.world.v1.WorldTile
 	6, // 3: slg.world.v1.WorldSnapshot.marches:type_name -> slg.world.v1.WorldMarch
-	1, // 4: slg.world.v1.WorldReply.result:type_name -> slg.world.v1.WorldResult
-	7, // 5: slg.world.v1.WorldReply.snapshot:type_name -> slg.world.v1.WorldSnapshot
-	6, // [6:6] is the sub-list for method output_type
-	6, // [6:6] is the sub-list for method input_type
-	6, // [6:6] is the sub-list for extension type_name
-	6, // [6:6] is the sub-list for extension extendee
-	0, // [0:6] is the sub-list for field type_name
+	7, // 4: slg.world.v1.WorldSnapshot.last_battle:type_name -> slg.world.v1.WorldBattleReport
+	1, // 5: slg.world.v1.WorldReply.result:type_name -> slg.world.v1.WorldResult
+	8, // 6: slg.world.v1.WorldReply.snapshot:type_name -> slg.world.v1.WorldSnapshot
+	7, // 7: slg.world.v1.WorldReply.battle_reports:type_name -> slg.world.v1.WorldBattleReport
+	8, // [8:8] is the sub-list for method output_type
+	8, // [8:8] is the sub-list for method input_type
+	8, // [8:8] is the sub-list for extension type_name
+	8, // [8:8] is the sub-list for extension extendee
+	0, // [0:8] is the sub-list for field type_name
 }
 
 func init() { file_proto_world_proto_init() }
@@ -681,13 +921,15 @@ func file_proto_world_proto_init() {
 	if File_proto_world_proto != nil {
 		return
 	}
+	file_proto_world_proto_msgTypes[1].OneofWrappers = []any{}
+	file_proto_world_proto_msgTypes[7].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_world_proto_rawDesc), len(file_proto_world_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   7,
+			NumMessages:   8,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

@@ -4,38 +4,15 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
 
 #include <orbit/request_server.hpp>
 
 #include "httplib.h"
+#include "battle_client.hpp"
 #include "world.hpp"
 
 namespace {
-
-struct ListenAddress {
-    std::string host;
-    std::uint16_t port;
-};
-
-ListenAddress addressFromEnv(const char* name, const char* fallback) {
-    const auto configured = std::getenv(name);
-    const std::string address = configured ? configured : fallback;
-    const auto split = address.rfind(':');
-    if (split == std::string::npos || split == 0) {
-        throw std::invalid_argument(std::string(name) + " must use host:port");
-    }
-    auto host = address.substr(0, split);
-    if (host.front() == '[' && host.back() == ']') {
-        host = host.substr(1, host.size() - 2);
-    }
-    const auto end = address.data() + address.size();
-    std::uint16_t port = 0;
-    const auto [next, error] = std::from_chars(address.data() + split + 1, end, port);
-    if (error != std::errc{} || next != end || host.empty()) {
-        throw std::invalid_argument(std::string(name) + " contains an invalid address");
-    }
-    return {host, port};
-}
 
 std::chrono::seconds seatIdleTimeout() {
     const auto configured = std::getenv("SLG_WORLD_IDLE_SECONDS");
@@ -85,21 +62,24 @@ orbit::RequestReply handleWorld(slg::World& world, const orbit::rpc::Frame& fram
 
 int main() {
     try {
-        const auto http = addressFromEnv("SLG_GAME_ADDR", "127.0.0.1:8081");
-        const auto rpc = addressFromEnv("SLG_GAME_RPC_ADDR", "127.0.0.1:8083");
+        const auto http = slg::addressFromEnv("SLG_GAME_ADDR", "127.0.0.1:8081");
+        const auto rpc = slg::addressFromEnv("SLG_GAME_RPC_ADDR", "127.0.0.1:8083");
+        slg::BattleClient battle(slg::addressFromEnv("SLG_BATTLE_RPC_UPSTREAM", "127.0.0.1:8084"));
         slg::World world(seatIdleTimeout());
         orbit::RequestServer requests(rpc.host, rpc.port, {
             {worldRequestId, [&](std::stop_token, const orbit::rpc::Frame& frame) {
                 return handleWorld(world, frame);
             }},
-            {worldProbeId, [](std::stop_token, const orbit::rpc::Frame&) {
-                return orbit::RequestReply{worldProbeReplyId, {}};
+            {worldProbeId, [&](std::stop_token, const orbit::rpc::Frame&) {
+                return orbit::RequestReply{worldProbeReplyId, battle.ready() ? orbit::rpc::Bytes{} : orbit::rpc::Bytes{1}};
             }},
         }, {
             .max_payload = maxWorldPayload,
             .max_concurrent = maxWorldPending,
             .max_pending_per_connection = maxWorldPending,
         });
+        std::jthread battleWorker([&](std::stop_token stop) { battle.run(stop, world); });
+        std::jthread battleMonitor([&](std::stop_token stop) { battle.monitorReadiness(stop); });
 
         httplib::Server health;
         health.new_task_queue = [] { return new httplib::ThreadPool(4); };

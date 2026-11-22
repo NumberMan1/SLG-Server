@@ -2,18 +2,18 @@ cmake_minimum_required(VERSION 3.20)
 project(slg_game_server LANGUAGES CXX)
 
 include(dependencies.cmake)
-include(orbit.cmake)
+include(../cpp/orbit.cmake)
 slg_orbit_cpp(orbit_source)
 add_subdirectory("${orbit_source}" "${CMAKE_CURRENT_BINARY_DIR}/orbit-cpp")
 find_package(Threads REQUIRED)
 
-add_executable(game-server src/main.cpp src/world.cpp)
+add_executable(game-server src/main.cpp src/world.cpp src/battle_client.cpp)
 set_target_properties(game-server PROPERTIES
     CXX_STANDARD 23
     CXX_STANDARD_REQUIRED ON
     CXX_EXTENSIONS OFF
 )
-target_include_directories(game-server PRIVATE "${SLG_GAME_DEPS_DIR}")
+target_include_directories(game-server PRIVATE "${SLG_GAME_DEPS_DIR}" ../cpp ../battle-server/include)
 target_link_libraries(game-server PRIVATE orbit::cpp Threads::Threads)
 if(WIN32)
     target_compile_definitions(game-server PRIVATE _WIN32_WINNT=0x0A00)

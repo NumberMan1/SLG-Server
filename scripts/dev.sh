@@ -34,6 +34,7 @@ image=localhost/slg-dev:local
 gateway=slg-dev-gateway
 login_server=slg-dev-login-server
 game_server=slg-dev-game-server
+battle_server=slg-dev-battle-server
 owner_label=com.numberman1.slg.environment=${connection:-local}
 
 run_podman() {
@@ -57,7 +58,7 @@ case $action in
         owned=$(owned_containers '{{.Names}}')
         for name in $owned; do
             case $name in
-                "$gateway"|"$login_server"|"$game_server") run_podman rm --force "$name" ;;
+                "$gateway"|"$login_server"|"$game_server"|"$battle_server") run_podman rm --force "$name" ;;
             esac
         done
         exit 0
@@ -178,7 +179,7 @@ export SLG_ETCD_PREFIX=${SLG_ETCD_PREFIX:-/slg/services}
 export SLG_ETCD_USERNAME=${SLG_ETCD_USERNAME:-}
 export SLG_ETCD_PASSWORD=${SLG_ETCD_PASSWORD:-}
 
-for name in "$gateway" "$login_server" "$game_server"; do
+for name in "$gateway" "$login_server" "$game_server" "$battle_server"; do
     if run_podman container exists "$name"; then
         require_owned_container "$name"
     fi
@@ -195,9 +196,13 @@ mkdir -p "$build_dir"
     done
 )
 
-# 游戏服由容器内的 C++ 工具链构建，和 Go 服务使用同一目标架构。
+# 两个 C++ 服务由容器内工具链构建，和 Go 服务使用同一目标架构。
 game_source="$server_dir/internal/game-server"
 game_context="$build_dir/internal/game-server"
+battle_source="$server_dir/internal/battle-server"
+battle_context="$build_dir/internal/battle-server"
+cpp_source="$server_dir/internal/cpp"
+cpp_context="$build_dir/internal/cpp"
 deps_dir="$server_dir/.build/game-deps"
 orbit_stage="$game_context/orbit-cpp"
 if command -v cygpath >/dev/null 2>&1; then
@@ -205,11 +210,15 @@ if command -v cygpath >/dev/null 2>&1; then
     orbit_stage=$(cygpath -m "$orbit_stage")
 fi
 cmake "-DSLG_GAME_DEPS_DIR=$deps_dir" -P "$game_source/dependencies.cmake"
-cmake "-DSLG_ORBIT_STAGE_DIR=$orbit_stage" -P "$game_source/orbit.cmake"
-mkdir -p "$game_context/deps" "$game_context/src"
+cmake "-DSLG_ORBIT_STAGE_DIR=$orbit_stage" -P "$cpp_source/orbit.cmake"
+mkdir -p "$game_context/deps" "$game_context/src" "$battle_context/src" "$battle_context/include" "$cpp_context"
 cp "$deps_dir/json.hpp" "$deps_dir/httplib.h" "$game_context/deps/"
-cp "$game_source/CMakeLists.txt" "$game_source/dependencies.cmake" "$game_source/orbit.cmake" "$game_context/"
+cp "$game_source/CMakeLists.txt" "$game_source/dependencies.cmake" "$game_context/"
 cp "$game_source/src/"* "$game_context/src/"
+cp "$battle_source/CMakeLists.txt" "$battle_context/"
+cp "$battle_source/src/"* "$battle_context/src/"
+cp -R "$battle_source/include/slg" "$battle_context/include/"
+cp "$cpp_source/orbit.cmake" "$cpp_source/address.hpp" "$cpp_context/"
 
 containerfile="$server_dir/deploy/Containerfile"
 if command -v cygpath >/dev/null 2>&1; then
@@ -229,8 +238,9 @@ fi
 
 # 应用容器通过 Podman 网络 DNS 访问依赖和其他服务。
 set -- run --detach --replace --http-proxy=false --network "$network" --label "$owner_label"
+run_podman "$@" --name "$battle_server" --env SLG_BATTLE_RPC_ADDR=0.0.0.0:8084 "$image" /slg/battle-server
 run_podman "$@" --name "$game_server" --env SLG_GAME_ADDR=0.0.0.0:8081 --env SLG_GAME_RPC_ADDR=0.0.0.0:8083 \
-    --env SLG_WORLD_IDLE_SECONDS \
+    --env SLG_WORLD_IDLE_SECONDS --env "SLG_BATTLE_RPC_UPSTREAM=$battle_server:8084" \
     "$image" /slg/game-server
 run_podman "$@" --name "$login_server" --env SLG_LOGIN_ADDR=0.0.0.0:8082 \
     --env "SLG_LOGIN_ADVERTISE_URL=http://$login_server:8082" \
@@ -260,5 +270,5 @@ while [ "$attempt" -lt 20 ]; do
     attempt=$((attempt + 1))
     sleep 1
 done
-printf 'SLG did not become ready. Inspect the %s, %s and %s container logs.\n' "$gateway" "$login_server" "$game_server" >&2
+printf 'SLG did not become ready. Inspect the %s, %s, %s and %s container logs.\n' "$gateway" "$login_server" "$game_server" "$battle_server" >&2
 exit 1

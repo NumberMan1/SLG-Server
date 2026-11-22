@@ -27,6 +27,8 @@ import (
 
 func TestSharedWorldOverTCPAndWebSocket(t *testing.T) {
 	t.Setenv("SLG_WORLD_IDLE_SECONDS", "60")
+	battle, stopBattle := startCPPServer(t, "SLG_TEST_BATTLE_SERVER", "battle-server rpc listening ", "SLG_BATTLE_RPC_ADDR=127.0.0.1:0")
+	t.Setenv("SLG_BATTLE_RPC_UPSTREAM", battle)
 	game, stopGame := startCPPGameServer(t, "127.0.0.1:0")
 	upstream, err := gateway.NewWorldConnector(game)
 	if err != nil {
@@ -51,9 +53,23 @@ func TestSharedWorldOverTCPAndWebSocket(t *testing.T) {
 		}
 	}
 	waitForUpstream()
-	if err := gateway.CheckWorldReady(t.Context(), upstream); err != nil {
-		t.Fatalf("Orbit readiness failed after connecting: %v", err)
+	waitForBattleReadiness := func(ready bool) {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(t.Context(), 4*time.Second)
+		defer cancel()
+		for {
+			err := gateway.CheckWorldReady(ctx, upstream)
+			if (err == nil) == ready {
+				return
+			}
+			select {
+			case <-ctx.Done():
+				t.Fatalf("battle readiness did not become %v: %v", ready, err)
+			case <-time.After(50 * time.Millisecond):
+			}
+		}
 	}
+	waitForBattleReadiness(true)
 	tickets := &memoryTickets{}
 	handle := gateway.NewSessions(tickets).WorldHandler(upstream)
 	options, err := gateway.SessionOptions()
@@ -90,7 +106,7 @@ func TestSharedWorldOverTCPAndWebSocket(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = conn.Close() })
-		if err := conn.SetDeadline(time.Now().Add(15 * time.Second)); err != nil {
+		if err := conn.SetDeadline(time.Now().Add(35 * time.Second)); err != nil {
 			t.Fatal(err)
 		}
 		return conn
@@ -117,7 +133,7 @@ func TestSharedWorldOverTCPAndWebSocket(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = bConn.Close() })
-	if err := bConn.SetReadDeadline(time.Now().Add(15 * time.Second)); err != nil {
+	if err := bConn.SetReadDeadline(time.Now().Add(35 * time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	b := func(frame rpc.Frame) (rpc.Frame, error) {
@@ -186,6 +202,80 @@ func TestSharedWorldOverTCPAndWebSocket(t *testing.T) {
 		len(replayed.GetSnapshot().GetMarches()) != 0 {
 		t.Fatalf("reconnect replay changed the outcome: %v", replayed)
 	}
+	issueMarch := func(command string, q int32, troops uint32) *pb.WorldSnapshot {
+		t.Helper()
+		current := queryWorld(t, b, &pb.WorldRequest{}).GetSnapshot()
+		request := knownWorld(current)
+		request.Order = &pb.MarchOrder{CommandId: command, TargetTileId: tileAt(current, q, 0).GetId(), Troops: troops}
+		response := queryWorld(t, b, request)
+		if response.GetResult() != pb.WorldResult_WORLD_RESULT_OK || len(response.GetSnapshot().GetMarches()) != 1 {
+			t.Fatalf("failed to send %s: %v", command, response)
+		}
+		return response.GetSnapshot()
+	}
+	waitForWorld := func(expect func(*pb.WorldReply) bool) *pb.WorldSnapshot {
+		t.Helper()
+		deadline := time.Now().Add(6 * time.Second)
+		for {
+			reply := queryWorld(t, b, &pb.WorldRequest{})
+			if expect(reply) {
+				return reply.GetSnapshot()
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("world did not reach the expected state: %v", reply)
+			}
+			time.Sleep(80 * time.Millisecond)
+		}
+	}
+	for _, crossing := range []struct {
+		q  int32
+		id string
+	}{{1, "right-border"}, {0, "middle-border"}} {
+		issueMarch(crossing.id, crossing.q, 20)
+		waitForWorld(func(reply *pb.WorldReply) bool {
+			tile := tileAt(reply.GetSnapshot(), crossing.q, 0)
+			return tile.GetOwner() == 2 && tile.GetGarrison() == 20
+		})
+	}
+	firstAttack := issueMarch("first-attack", -1, 20).GetMarches()[0]
+	if !firstAttack.GetHostile() || firstAttack.GetTroops() != 20 {
+		t.Fatalf("missing battle march: %v", firstAttack)
+	}
+	stopBattle()
+	waitForBattleReadiness(false)
+	// 战斗服不可用时前端仍然能读取地图，到达的部队等待原快照结算。
+	waitForWorld(func(reply *pb.WorldReply) bool { return reply.GetServerTimeMs() > firstAttack.GetArrivesAtMs()+200 })
+	awaiting := queryWorld(t, b, &pb.WorldRequest{}).GetSnapshot()
+	if tileAt(awaiting, -1, 0).GetOwner() != 1 || awaiting.GetLastBattle() != nil || len(awaiting.GetMarches()) != 1 {
+		t.Fatalf("pending combat changed the map: %v", awaiting)
+	}
+	startCPPServer(t, "SLG_TEST_BATTLE_SERVER", "battle-server rpc listening ", "SLG_BATTLE_RPC_ADDR="+battle)
+	waitForBattleReadiness(true)
+	defended := waitForWorld(func(reply *pb.WorldReply) bool { return reply.GetSnapshot().GetLastBattle() != nil })
+	defense := defended.GetLastBattle()
+	if defense.GetCaptured() || defense.GetAttackerTroops() != 20 || defense.GetDefenderTroops() != 40 ||
+		defense.GetDefenderSurvivors() != 30 || tileAt(defended, -1, 0).GetOwner() != 1 || tileAt(defended, -1, 0).GetGarrison() != 30 {
+		t.Fatalf("defense was not applied correctly: %v", defended)
+	}
+	_ = queryWorld(t, reconnected, &pb.WorldRequest{})
+	issueMarch("capture-attack", -1, 60)
+	captured := waitForWorld(func(reply *pb.WorldReply) bool {
+		return reply.GetSnapshot().GetLastBattle().GetBattleId() > defense.GetBattleId()
+	})
+	shared := queryWorld(t, reconnected, &pb.WorldRequest{}).GetSnapshot()
+	if !captured.GetLastBattle().GetCaptured() || tileAt(captured, -1, 0).GetOwner() != 2 ||
+		tileAt(captured, -1, 0).GetGarrison() != 45 || !proto.Equal(captured.GetLastBattle(), shared.GetLastBattle()) {
+		t.Fatalf("the players did not see the same victorious settlement: %v / %v", captured, shared)
+	}
+	// 新客户端经网关读取游标之后的战报和独立的兵力更新。
+	incremental := knownWorld(captured)
+	after := defense.GetBattleId()
+	incremental.KnownBattleId = &after
+	updated := queryWorld(t, b, incremental)
+	if updated.AvailableTroops == nil || len(updated.GetBattleReports()) != 1 ||
+		!proto.Equal(updated.GetBattleReports()[0], captured.GetLastBattle()) {
+		t.Fatalf("gateway did not forward incremental world state: %v", updated)
+	}
 
 	// 游戏服断线时保留前端会话；新游戏进程启动后，网关重建内网请求连接。
 	stopGame()
@@ -206,36 +296,7 @@ func TestSharedWorldOverTCPAndWebSocket(t *testing.T) {
 func TestWorldReclaimsExpiredSeat(t *testing.T) {
 	t.Setenv("SLG_WORLD_IDLE_SECONDS", "2")
 	address, _ := startCPPGameServer(t, "127.0.0.1:0")
-	connection, err := net.DialTimeout("tcp", address, time.Second)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer connection.Close()
-	if err := connection.SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
-		t.Fatal(err)
-	}
-	var sequence uint32
-	world := func(account string, request *pb.WorldRequest) *pb.WorldReply {
-		t.Helper()
-		if request == nil {
-			request = &pb.WorldRequest{}
-		}
-		data, err := (protojson.MarshalOptions{UseProtoNames: true}).Marshal(&pb.WorldCommand{Account: account, Request: request})
-		if err != nil {
-			t.Fatal(err)
-		}
-		sequence++
-		if err := rpc.Write(connection, rpc.Frame{ID: uint16(pb.WorldMessageId_WORLD_MESSAGE_ID_REQUEST), Sequence: sequence, Payload: data}, 4096); err != nil {
-			t.Fatal(err)
-		}
-		frame, err := rpc.Read(connection, 4096)
-		var reply pb.WorldReply
-		if err != nil || frame.Sequence != sequence || frame.ID != uint16(pb.WorldMessageId_WORLD_MESSAGE_ID_REPLY) ||
-			protojson.Unmarshal(frame.Payload, &reply) != nil {
-			t.Fatalf("invalid world reply: %v, %v", frame, err)
-		}
-		return &reply
-	}
+	world := directWorld(t, address)
 	a := world("active-player", nil).GetSnapshot()
 	b := world("idle-player", nil).GetSnapshot()
 	if a.GetYourPlayer() != 1 || b.GetYourPlayer() != 2 || a.GetInstance() != b.GetInstance() {
@@ -269,6 +330,181 @@ func TestWorldReclaimsExpiredSeat(t *testing.T) {
 	}
 	if result := world("idle-player", order).GetResult(); result != pb.WorldResult_WORLD_RESULT_WORLD_CHANGED {
 		t.Fatalf("the expired world's order was not rejected: %v", result)
+	}
+}
+
+func TestSlowBattleProbeDoesNotBlockWorld(t *testing.T) {
+	listener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	t.Setenv("SLG_BATTLE_RPC_UPSTREAM", listener.Addr().String())
+	address, _ := startCPPGameServer(t, "127.0.0.1:0")
+	if err := listener.SetDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	// 接收后台探测的连接但不回包，验证应用还能立即响应请求。
+	stalled, err := listener.AcceptTCP()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stalled.Close()
+	upstream, err := gateway.NewWorldConnector(address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := upstream.Start(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := upstream.Stop(ctx); err != nil {
+			t.Error(err)
+		}
+	})
+	connectCtx, cancelConnect := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancelConnect()
+	if _, err := upstream.WaitSession(connectCtx); err != nil {
+		t.Fatal(err)
+	}
+	probeCtx, cancelProbe := context.WithTimeout(t.Context(), 350*time.Millisecond)
+	defer cancelProbe()
+	if err := gateway.CheckWorldReady(probeCtx, upstream); err == nil || probeCtx.Err() != nil {
+		t.Fatalf("expected immediate not-ready response while battle probe is blocked: %v", err)
+	}
+	if reply := directWorld(t, address)("active-player", nil); reply.GetSnapshot().GetYourPlayer() != 1 {
+		t.Fatalf("world was unavailable while the battle probe was blocked: %v", reply)
+	}
+}
+
+func TestPendingBattlesKeepSeatsAndReturnSurvivors(t *testing.T) {
+	t.Setenv("SLG_WORLD_IDLE_SECONDS", "6")
+	battle, stopBattle := startCPPServer(t, "SLG_TEST_BATTLE_SERVER", "battle-server rpc listening ", "SLG_BATTLE_RPC_ADDR=127.0.0.1:0")
+	t.Setenv("SLG_BATTLE_RPC_UPSTREAM", battle)
+	address, _ := startCPPGameServer(t, "127.0.0.1:0")
+	world := directWorld(t, address)
+	const attacker, defender, waiting = "attacker", "defender", "waiting"
+	syncWorld := func(snapshot *pb.WorldSnapshot, after uint64) *pb.WorldRequest {
+		request := knownWorld(snapshot)
+		request.KnownBattleId = &after
+		return request
+	}
+	read := func(account string) *pb.WorldReply {
+		return world(account, syncWorld(nil, 0))
+	}
+	order := func(account, id string, q int32, troops uint32) *pb.WorldReply {
+		t.Helper()
+		current := read(account).GetSnapshot()
+		request := syncWorld(current, 0)
+		request.Order = &pb.MarchOrder{CommandId: id, TargetTileId: tileAt(current, q, 0).GetId(), Troops: troops}
+		reply := world(account, request)
+		if reply.GetResult() != pb.WorldResult_WORLD_RESULT_OK {
+			t.Fatalf("failed to place %s: %v", id, reply)
+		}
+		return reply
+	}
+	waitFor := func(account string, expect func(*pb.WorldReply) bool) *pb.WorldReply {
+		t.Helper()
+		deadline := time.Now().Add(8 * time.Second)
+		for {
+			reply := read(account)
+			if expect(reply) {
+				return reply
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("world did not reach expected state: %v", reply)
+			}
+			time.Sleep(60 * time.Millisecond)
+		}
+	}
+
+	order(attacker, "west", -1, 2)
+	order(defender, "east", 1, 1)
+	waitFor(attacker, func(reply *pb.WorldReply) bool { return tileAt(reply.GetSnapshot(), 1, 0).GetOwner() == 2 })
+	center := order(defender, "center", 0, 20)
+	current := read(attacker).GetSnapshot()
+	waitFor(defender, func(reply *pb.WorldReply) bool { return reply.GetAvailableTroops() > center.GetAvailableTroops() })
+	// 只补充二号玩家的私有兵力时，一号玩家仍沿用原来的地图快照。
+	if reply := world(attacker, syncWorld(current, 0)); reply.GetSnapshot() != nil || reply.GetAvailableTroops() != 100 {
+		t.Fatalf("private troop update invalidated the other player's map: %v", reply)
+	}
+	waitFor(attacker, func(reply *pb.WorldReply) bool { return tileAt(reply.GetSnapshot(), 0, 0).GetOwner() == 2 })
+
+	stopBattle()
+	order(attacker, "attack-center", 0, 16)
+	counterattack := order(defender, "attack-west", -1, 1)
+	// 暂停战斗服直到二号玩家超过空闲时限。双方敌对行军与驻军仍应保留。
+	pending := waitFor(attacker, func(reply *pb.WorldReply) bool {
+		return reply.GetServerTimeMs() > counterattack.GetServerTimeMs()+6200
+	})
+	if tileAt(pending.GetSnapshot(), 0, 0).GetOwner() != 2 || len(pending.GetSnapshot().GetMarches()) != 2 ||
+		len(pending.GetBattleReports()) != 0 || read(waiting).GetResult() != pb.WorldResult_WORLD_RESULT_FULL {
+		t.Fatalf("pending battles failed to keep their seats and garrisons: %v", pending)
+	}
+	startCPPServer(t, "SLG_TEST_BATTLE_SERVER", "battle-server rpc listening ", "SLG_BATTLE_RPC_ADDR="+battle)
+	settled := waitFor(attacker, func(reply *pb.WorldReply) bool { return len(reply.GetBattleReports()) == 2 })
+	reports := settled.GetBattleReports()
+	var retreat *pb.WorldBattleReport
+	for _, report := range reports {
+		if report.GetAttacker() == 1 {
+			retreat = report
+		}
+	}
+	if reports[0].GetBattleId() >= reports[1].GetBattleId() || retreat.GetCaptured() ||
+		retreat.GetDefender() != 2 || retreat.GetAttackerSurvivors() != 6 || settled.GetAvailableTroops() != 106 {
+		t.Fatalf("ordered reports or overflow troops were lost: %v", settled)
+	}
+	rejoined := read(waiting)
+	if rejoined.GetSnapshot().GetYourPlayer() != 2 || len(rejoined.GetBattleReports()) != 2 {
+		t.Fatalf("expected a free seat and both reports after settlement: %v", rejoined)
+	}
+	time.Sleep(1100 * time.Millisecond)
+	latest := read(attacker)
+	delta := world(attacker, syncWorld(latest.GetSnapshot(), reports[0].GetBattleId()))
+	if delta.GetSnapshot() != nil || delta.GetAvailableTroops() != 106 || len(delta.GetBattleReports()) != 1 ||
+		!proto.Equal(delta.GetBattleReports()[0], reports[1]) {
+		t.Fatalf("overflow reserves or report cursor incorrect: %v", delta)
+	}
+	dispatched := order(attacker, "spend-overflow", 0, 7)
+	if dispatched.GetAvailableTroops() != 99 {
+		t.Fatalf("overflow reserves were not available to dispatch: %v", dispatched)
+	}
+	waitFor(attacker, func(reply *pb.WorldReply) bool { return reply.GetAvailableTroops() == 100 })
+}
+
+func directWorld(t *testing.T, address string) func(string, *pb.WorldRequest) *pb.WorldReply {
+	t.Helper()
+	connection, err := net.DialTimeout("tcp", address, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = connection.Close() })
+	var sequence uint32
+	return func(account string, request *pb.WorldRequest) *pb.WorldReply {
+		t.Helper()
+		if err := connection.SetDeadline(time.Now().Add(3 * time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		if request == nil {
+			request = &pb.WorldRequest{}
+		}
+		data, err := (protojson.MarshalOptions{UseProtoNames: true}).Marshal(&pb.WorldCommand{Account: account, Request: request})
+		if err != nil {
+			t.Fatal(err)
+		}
+		sequence++
+		if err := rpc.Write(connection, rpc.Frame{ID: uint16(pb.WorldMessageId_WORLD_MESSAGE_ID_REQUEST), Sequence: sequence, Payload: data}, 4096); err != nil {
+			t.Fatal(err)
+		}
+		frame, err := rpc.Read(connection, 4096)
+		var reply pb.WorldReply
+		if err != nil || frame.Sequence != sequence || frame.ID != uint16(pb.WorldMessageId_WORLD_MESSAGE_ID_REPLY) ||
+			protojson.Unmarshal(frame.Payload, &reply) != nil {
+			t.Fatalf("invalid world reply: %v, %v", frame, err)
+		}
+		return &reply
 	}
 }
 
@@ -325,12 +561,17 @@ func tileAt(snapshot *pb.WorldSnapshot, q, r int32) *pb.WorldTile {
 
 func startCPPGameServer(t *testing.T, address string) (string, func()) {
 	t.Helper()
-	binary := os.Getenv("SLG_TEST_GAME_SERVER")
+	return startCPPServer(t, "SLG_TEST_GAME_SERVER", "game-server rpc listening ", "SLG_GAME_ADDR=127.0.0.1:0", "SLG_GAME_RPC_ADDR="+address)
+}
+
+func startCPPServer(t *testing.T, binaryEnv, readyPrefix string, settings ...string) (string, func()) {
+	t.Helper()
+	binary := os.Getenv(binaryEnv)
 	if binary == "" {
-		t.Skip("run scripts/verify.sh to build the C++ game server for this test")
+		t.Skipf("run scripts/verify.sh to set %s", binaryEnv)
 	}
 	process := exec.CommandContext(t.Context(), binary)
-	process.Env = append(process.Environ(), "SLG_GAME_ADDR=127.0.0.1:0", "SLG_GAME_RPC_ADDR="+address)
+	process.Env = append(process.Environ(), settings...)
 	process.Stderr = os.Stderr
 	output, err := process.StdoutPipe()
 	if err != nil {
@@ -355,14 +596,14 @@ func startCPPGameServer(t *testing.T, address string) (string, func()) {
 	select {
 	case line := <-ready:
 		if line == "" {
-			t.Fatalf("C++ game server exited before listening: %v", process.Wait())
+			t.Fatalf("%s exited before listening: %v", binaryEnv, process.Wait())
 		}
-		if addr, ok := strings.CutPrefix(line, "game-server rpc listening "); ok {
+		if addr, ok := strings.CutPrefix(line, readyPrefix); ok {
 			return addr, stop
 		}
-		t.Fatalf("unexpected game server startup output: %q", line)
+		t.Fatalf("unexpected %s startup output: %q", binaryEnv, line)
 	case <-time.After(3 * time.Second):
-		t.Fatal("C++ game server did not start")
+		t.Fatalf("%s did not start", binaryEnv)
 	}
 	return "", nil
 }

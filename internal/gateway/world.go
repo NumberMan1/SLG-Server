@@ -127,7 +127,10 @@ func CheckWorldReady(ctx context.Context, upstream *socket.Connector) error {
 	if err != nil {
 		return err
 	}
-	_, err = client.Call(ctx, rpc.Frame{ID: worldProbeID}, worldProbeReplyID)
+	reply, err := client.Call(ctx, rpc.Frame{ID: worldProbeID}, worldProbeReplyID)
+	if err == nil && len(reply.Payload) != 0 {
+		return errors.New("battle server unavailable")
+	}
 	return err
 }
 
