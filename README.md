@@ -24,7 +24,7 @@
 
 联调需要 Podman、Go 1.27.2、CMake、`curl` 和 POSIX `sh`。Windows 可使用 Git Bash，并先启动自己的 Podman 虚拟机。脚本编译 Linux 网关和登录服，校验 C++ 依赖，再在 Podman 中构建游戏服和运行镜像。
 
-Orbit、Numbox 和 NumberMan1/log 通过 Go Modules 下载，版本和校验和固定在 `go.mod` 与 `go.sum`。C++ 游戏服从同一个 Orbit 模块目录链接 `orbit::cpp`，Podman 由宿主机在构建前暂存该源码。服务端模块路径为 `github.com/NumberMan1/slg-server`。
+Orbit、Numbox 和 NumberMan1/log 通过 Go Modules 下载，版本和校验和固定在 `go.mod` 与 `go.sum`。Go 服务和两个 C++ 服务共用 Orbit v0.4.1。C++ 服务从该模块目录链接 `orbit::cpp`，Podman 由宿主机在构建前暂存该源码。服务端模块路径为 `github.com/NumberMan1/slg-server`。
 
 当前 Orbit 需要 GitHub 仓库读取权限。新机器上先配置 GitHub 的 Git 凭据，再将 Orbit 加入 `GOPRIVATE`。如果已配置其他私有模块，请保留原有条目并以逗号追加。
 
@@ -115,6 +115,8 @@ VS Code 的 Go 网关、登录服和 Podman 共用 `.env`。在 `.env` 明确填
 ## 运行校验
 
 在服务端仓库根目录执行。两个 C++ 服务使用 CMake 3.20 或更新版本，并沿用 Orbit 的 C++23 要求。战斗规则库使用 C++20。有 Ninja 时脚本默认使用 Ninja，也可以通过 `SLG_CMAKE_GENERATOR` 指定生成器。脚本构建游戏服及战斗服，并用真实进程运行跨进程联通用例。可用 `SLG_GAME_BUILD_DIR` 和 `SLG_BUILD_DIR` 分别覆盖游戏服和战斗服的构建目录。
+
+验证 Orbit 的 C++ 上游改动时，可把环境变量 `SLG_ORBIT_CPP_DIR` 设为本地 Orbit 的 `cpp` 目录（例如 `D:/go/src/github.com/NumberMan1/orbit/cpp`）。本机构建与 Podman 源码暂存均识别此变量。默认使用 `go.mod` 锁定的发布版本。
 
 ```sh
 sh scripts/verify.sh

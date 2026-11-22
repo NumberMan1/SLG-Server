@@ -28,7 +28,12 @@ import (
 func TestSharedWorldOverTCPAndWebSocket(t *testing.T) {
 	t.Setenv("SLG_WORLD_IDLE_SECONDS", "60")
 	battle, stopBattle := startCPPServer(t, "SLG_TEST_BATTLE_SERVER", "battle-server rpc listening ", "SLG_BATTLE_RPC_ADDR=127.0.0.1:0")
-	t.Setenv("SLG_BATTLE_RPC_UPSTREAM", battle)
+	_, battlePort, err := net.SplitHostPort(battle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 监听仍用数字地址，游戏服用主机名连接，覆盖 Podman 的容器 DNS 用法。
+	t.Setenv("SLG_BATTLE_RPC_UPSTREAM", net.JoinHostPort("localhost", battlePort))
 	game, stopGame := startCPPGameServer(t, "127.0.0.1:0")
 	upstream, err := gateway.NewWorldConnector(game)
 	if err != nil {
