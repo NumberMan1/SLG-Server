@@ -21,6 +21,9 @@ enum WorldResult {
   WORLD_RESULT_WORLD_CHANGED = 6;
   WORLD_RESULT_UNAVAILABLE = 7;
   WORLD_RESULT_INSUFFICIENT_TROOPS = 8;
+  WORLD_RESULT_REINFORCEMENT_CLOSED = 9;
+  WORLD_RESULT_BATTLE_CAPACITY = 10;
+  WORLD_RESULT_BATTLE_CLOSED = 11;
 }
 
 // 每名玩家的行军指令 ID 在同一世界内唯一，重试时沿用。
@@ -29,6 +32,13 @@ message MarchOrder {
   uint32 target_tile_id = 2;
   // 省略时派出默认兵力，兼容已有客户端。
   uint32 troops = 3;
+  // 提供回合和增援界面的客户端启用三回合规则。
+  bool round_battle = 4;
+  // 援军仅加入指定战斗，避免地块易主后误变成进攻。
+  uint64 reinforce_battle_id = 5;
+  bool continuous_battle = 6;
+  // 撤出指定战斗时省略出征兵力，指令仍使用相同的去重规则。
+  uint64 retreat_battle_id = 7;
 }
 
 // 不携带行军指令时只读取世界状态。
@@ -38,6 +48,8 @@ message WorldRequest {
   MarchOrder order = 3;
   // 支持增量同步的客户端始终携带游标，首次进入时为 0。
   optional uint64 known_battle_id = 4;
+  // 按战果提交顺序读取战报，包括晚开战却先结算的交锋。
+  optional uint64 known_report_id = 5;
 }
 
 // 网关从已认证会话填入账号，再把请求转发给游戏服。
@@ -62,6 +74,22 @@ message WorldMarch {
   int64 arrives_at_ms = 4;
   uint32 troops = 5;
   bool hostile = 6;
+  uint64 reinforce_battle_id = 7;
+}
+
+message WorldBattle {
+  uint64 battle_id = 1;
+  uint32 target_tile_id = 2;
+  uint32 attacker = 3;
+  uint32 defender = 4;
+  uint32 round = 5;
+  uint32 rounds = 6;
+  int64 round_ends_at_ms = 7;
+  uint32 attacker_troops = 8;
+  uint32 defender_troops = 9;
+  uint32 attacker_waiting = 10;
+  uint32 defender_waiting = 11;
+  bool continuous = 12;
 }
 
 message WorldBattleReport {
@@ -76,6 +104,11 @@ message WorldBattleReport {
   bool captured = 9;
   uint32 rule_version = 10;
   uint64 seed = 11;
+  uint32 rounds = 12;
+  uint32 attacker_reinforcements = 13;
+  uint32 defender_reinforcements = 14;
+  uint32 retreated_player = 15;
+  uint64 report_id = 16;
 }
 
 message WorldSnapshot {
@@ -87,6 +120,7 @@ message WorldSnapshot {
   uint32 available_troops = 6;
   uint32 troop_capacity = 7;
   WorldBattleReport last_battle = 8;
+  repeated WorldBattle battles = 9;
 }
 
 message WorldReply {

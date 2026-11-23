@@ -19,7 +19,7 @@ import (
 
 const (
 	worldClientKey  = "slg.world-client"
-	maxWorldPayload = 4096
+	maxWorldPayload = 8192
 	// 与 C++ 游戏服的 max_pending_per_connection 一致，在网关限制待处理请求。
 	maxWorldPending = 8
 	worldRequestID  = uint16(pb.WorldMessageId_WORLD_MESSAGE_ID_REQUEST)
@@ -129,7 +129,7 @@ func CheckWorldReady(ctx context.Context, upstream *socket.Connector) error {
 	}
 	reply, err := client.Call(ctx, rpc.Frame{ID: worldProbeID}, worldProbeReplyID)
 	if err == nil && len(reply.Payload) != 0 {
-		return errors.New("battle server unavailable")
+		return errors.New("invalid game readiness response")
 	}
 	return err
 }

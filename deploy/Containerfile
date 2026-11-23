@@ -1,17 +1,15 @@
 FROM docker.io/library/alpine:3.23 AS game-build
 RUN apk add --no-cache build-base cmake ca-certificates
-COPY internal /src/internal
+COPY internal/cpp /src/internal/cpp
+COPY internal/battle /src/internal/battle
+COPY internal/game-server /src/internal/game-server
 RUN cmake -S /src/internal/game-server -B /build/game -DCMAKE_BUILD_TYPE=Release -DSLG_STATIC_GAME_SERVER=ON \
+        -DBUILD_TESTING=OFF \
         -DSLG_GAME_DEPS_DIR=/src/internal/game-server/deps \
         -DSLG_ORBIT_CPP_DIR=/src/internal/game-server/orbit-cpp \
-    && cmake --build /build/game --parallel 2 \
-    && cmake -S /src/internal/battle-server -B /build/battle -DCMAKE_BUILD_TYPE=Release \
-        -DSLG_STATIC_BATTLE_SERVER=ON -DBUILD_TESTING=OFF \
-        -DSLG_ORBIT_CPP_DIR=/src/internal/game-server/orbit-cpp \
-    && cmake --build /build/battle --parallel 2
+    && cmake --build /build/game --parallel 2
 
 FROM scratch
 COPY --chmod=0555 gateway login-server /slg/
 COPY --from=game-build --chmod=0555 /build/game/game-server /slg/game-server
-COPY --from=game-build --chmod=0555 /build/battle/battle-server /slg/battle-server
 USER 65532:65532

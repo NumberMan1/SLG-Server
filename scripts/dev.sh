@@ -34,7 +34,6 @@ image=localhost/slg-dev:local
 gateway=slg-dev-gateway
 login_server=slg-dev-login-server
 game_server=slg-dev-game-server
-battle_server=slg-dev-battle-server
 owner_label=com.numberman1.slg.environment=${connection:-local}
 
 run_podman() {
@@ -58,7 +57,8 @@ case $action in
         owned=$(owned_containers '{{.Names}}')
         for name in $owned; do
             case $name in
-                "$gateway"|"$login_server"|"$game_server"|"$battle_server") run_podman rm --force "$name" ;;
+                # 同时清理由旧版启动脚本创建且带本环境标签的容器。
+                "$gateway"|"$login_server"|"$game_server"|slg-dev-battle-server) run_podman rm --force "$name" ;;
             esac
         done
         exit 0
@@ -179,7 +179,7 @@ export SLG_ETCD_PREFIX=${SLG_ETCD_PREFIX:-/slg/services}
 export SLG_ETCD_USERNAME=${SLG_ETCD_USERNAME:-}
 export SLG_ETCD_PASSWORD=${SLG_ETCD_PASSWORD:-}
 
-for name in "$gateway" "$login_server" "$game_server" "$battle_server"; do
+for name in "$gateway" "$login_server" "$game_server"; do
     if run_podman container exists "$name"; then
         require_owned_container "$name"
     fi
@@ -196,11 +196,11 @@ mkdir -p "$build_dir"
     done
 )
 
-# 两个 C++ 服务由容器内工具链构建，和 Go 服务使用同一目标架构。
+# 游戏服由容器内工具链构建，和 Go 服务使用同一目标架构。
 game_source="$server_dir/internal/game-server"
 game_context="$build_dir/internal/game-server"
-battle_source="$server_dir/internal/battle-server"
-battle_context="$build_dir/internal/battle-server"
+battle_source="$server_dir/internal/battle"
+battle_context="$build_dir/internal/battle"
 cpp_source="$server_dir/internal/cpp"
 cpp_context="$build_dir/internal/cpp"
 deps_dir="$server_dir/.build/game-deps"
@@ -238,9 +238,8 @@ fi
 
 # 应用容器通过 Podman 网络 DNS 访问依赖和其他服务。
 set -- run --detach --replace --http-proxy=false --network "$network" --label "$owner_label"
-run_podman "$@" --name "$battle_server" --env SLG_BATTLE_RPC_ADDR=0.0.0.0:8084 "$image" /slg/battle-server
 run_podman "$@" --name "$game_server" --env SLG_GAME_ADDR=0.0.0.0:8081 --env SLG_GAME_RPC_ADDR=0.0.0.0:8083 \
-    --env SLG_WORLD_IDLE_SECONDS --env "SLG_BATTLE_RPC_UPSTREAM=$battle_server:8084" \
+    --env SLG_WORLD_IDLE_SECONDS \
     "$image" /slg/game-server
 run_podman "$@" --name "$login_server" --env SLG_LOGIN_ADDR=0.0.0.0:8082 \
     --env "SLG_LOGIN_ADVERTISE_URL=http://$login_server:8082" \
@@ -270,5 +269,5 @@ while [ "$attempt" -lt 20 ]; do
     attempt=$((attempt + 1))
     sleep 1
 done
-printf 'SLG did not become ready. Inspect the %s, %s, %s and %s container logs.\n' "$gateway" "$login_server" "$game_server" "$battle_server" >&2
+printf 'SLG did not become ready. Inspect the %s, %s and %s container logs.\n' "$gateway" "$login_server" "$game_server" >&2
 exit 1

@@ -2,7 +2,7 @@
 
 - 日常开发在 `develop`，`master` 用于稳定版本。
 - Git 提交标题和正文使用中文，标题概括改动，正文按需说明原因和影响。采用 Conventional Commits 时，类型前缀沿用规范，描述使用中文，例如 `feat: 增加共享地图入口`。
-- Go 进程入口放在 `cmd`，业务实现放在 `internal`，运行时装配放在 `infrastructure`。C++23 游戏服和战斗服分别由 `internal/game-server` 和 `internal/battle-server` 的 CMake 构建，战斗规则库使用 C++20。
+- Go 进程入口放在 `cmd`，业务实现放在 `internal`，运行时装配放在 `infrastructure`。C++23 游戏服由 `internal/game-server` 的 CMake 构建，使用 `internal/battle` 中的 C++20 战斗规则库。
 - SLG 通过 Go Modules 使用固定版本的 Orbit、Numbox 和 NumberMan1/log。通用缺陷在对应上游库修复和验证，发布后更新 SLG 的依赖版本。
 - 本机服务联调入口为 `sh scripts/dev.sh up`。从 `.env.example` 复制一份本机 `.env`，已有 `gm-dev` 环境可在其中指定 Podman 连接和网络。
 - Go 业务单测随代码放置，集成用例放在 `test-cases`，共用测试装配放在 `testkit`。服务端校验入口为 `sh scripts/verify.sh`。

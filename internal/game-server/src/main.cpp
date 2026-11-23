@@ -4,13 +4,12 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
-#include <thread>
 
 #include <orbit/request_server.hpp>
 
+#include "address.hpp"
 #include "httplib.h"
-#include "battle_client.hpp"
-#include "world.hpp"
+#include "world_actor.hpp"
 
 namespace {
 
@@ -35,7 +34,7 @@ constexpr std::uint16_t worldReplyId = 4;
 // 仅网关内部使用的探活帧，独立于玩法消息，不会占用世界名额。
 constexpr std::uint16_t worldProbeId = 5;
 constexpr std::uint16_t worldProbeReplyId = 6;
-constexpr std::size_t maxWorldPayload = 4096;
+constexpr std::size_t maxWorldPayload = 8192;
 // 网关在一条连接上复用各玩家的请求，接收上限与网关请求匹配器一致。
 constexpr std::size_t maxWorldPending = 8;
 
@@ -43,7 +42,7 @@ orbit::RequestReply reply(std::string payload) {
     return {worldReplyId, {payload.begin(), payload.end()}};
 }
 
-orbit::RequestReply handleWorld(slg::World& world, const orbit::rpc::Frame& frame) {
+orbit::RequestReply handleWorld(slg::WorldActor& world, const orbit::rpc::Frame& frame) {
     constexpr auto unavailable = R"({"result":7})";
     const auto body = nlohmann::json::parse(frame.payload.begin(), frame.payload.end(), nullptr, false);
     if (!body.is_object() || !body.contains("account") || !body["account"].is_string() ||
@@ -55,7 +54,8 @@ orbit::RequestReply handleWorld(slg::World& world, const orbit::rpc::Frame& fram
         return reply(unavailable);
     }
     // 账号由可信内网的网关从已认证会话填写，世界状态仍由游戏服持有。
-    return reply(world.update(account, body["request"]).dump());
+    const auto result = world.update(account, body["request"]);
+    return reply(result ? result->dump() : unavailable);
 }
 
 }  // 匿名命名空间
@@ -64,23 +64,19 @@ int main() {
     try {
         const auto http = slg::addressFromEnv("SLG_GAME_ADDR", "127.0.0.1:8081");
         const auto rpc = slg::addressFromEnv("SLG_GAME_RPC_ADDR", "127.0.0.1:8083");
-        slg::BattleClient battle(slg::addressFromEnv("SLG_BATTLE_RPC_UPSTREAM", "127.0.0.1:8084"));
-        slg::World world(seatIdleTimeout());
+        slg::WorldActor world(seatIdleTimeout());
         orbit::RequestServer requests(rpc.host, rpc.port, {
             {worldRequestId, [&](std::stop_token, const orbit::rpc::Frame& frame) {
                 return handleWorld(world, frame);
             }},
-            {worldProbeId, [&](std::stop_token, const orbit::rpc::Frame&) {
-                return orbit::RequestReply{worldProbeReplyId, battle.ready() ? orbit::rpc::Bytes{} : orbit::rpc::Bytes{1}};
+            {worldProbeId, [](std::stop_token, const orbit::rpc::Frame&) {
+                return orbit::RequestReply{worldProbeReplyId, {}};
             }},
         }, {
             .max_payload = maxWorldPayload,
             .max_concurrent = maxWorldPending,
             .max_pending_per_connection = maxWorldPending,
         });
-        std::jthread battleWorker([&](std::stop_token stop) { battle.run(stop, world); });
-        std::jthread battleMonitor([&](std::stop_token stop) { battle.monitorReadiness(stop); });
-
         httplib::Server health;
         health.new_task_queue = [] { return new httplib::ThreadPool(4); };
         health.set_read_timeout(5, 0);

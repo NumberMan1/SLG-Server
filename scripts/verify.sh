@@ -2,7 +2,6 @@
 set -eu
 
 server_dir=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
-build_dir=${SLG_BUILD_DIR:-"$server_dir/.build/internal/battle"}
 game_dir=${SLG_GAME_BUILD_DIR:-"$server_dir/.build/internal/game"}
 deps_dir="$server_dir/.build/game-deps"
 generator=${SLG_CMAKE_GENERATOR:-}
@@ -44,11 +43,9 @@ executable_path() (
     exit 1
 )
 
-build "$server_dir/internal/game-server" "$game_dir" "-DSLG_GAME_DEPS_DIR=$deps_dir"
-build "$server_dir/internal/battle-server" "$build_dir" -DBUILD_TESTING=ON
+build "$server_dir/internal/game-server" "$game_dir" "-DSLG_GAME_DEPS_DIR=$deps_dir" -DBUILD_TESTING=ON
 SLG_TEST_GAME_SERVER=$(executable_path "$game_dir" game-server)
-SLG_TEST_BATTLE_SERVER=$(executable_path "$build_dir" battle-server)
-export SLG_TEST_GAME_SERVER SLG_TEST_BATTLE_SERVER
+export SLG_TEST_GAME_SERVER
 
 (
     cd "$server_dir"
@@ -56,4 +53,4 @@ export SLG_TEST_GAME_SERVER SLG_TEST_BATTLE_SERVER
     go vet ./...
 )
 
-ctest --test-dir "$build_dir" -C Debug --output-on-failure
+ctest --test-dir "$game_dir" -C Debug --output-on-failure

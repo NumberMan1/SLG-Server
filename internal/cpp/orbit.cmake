@@ -19,8 +19,9 @@ function(slg_orbit_cpp output)
         set(source "${module_directory}/cpp")
     endif()
     if(NOT EXISTS "${source}/include/orbit/request_server.hpp" OR
-       NOT EXISTS "${source}/include/orbit/tcp_endpoint.hpp")
-        message(FATAL_ERROR "Orbit C++ 源码不完整，请使用 v0.4.1 或更新版本：${source}")
+       NOT EXISTS "${source}/include/orbit/tcp_endpoint.hpp" OR
+       NOT EXISTS "${source}/include/orbit/serial_queue.hpp")
+        message(FATAL_ERROR "Orbit C++ 源码不完整，请使用 v0.4.2 或更新版本：${source}")
     endif()
     set(${output} "${source}" PARENT_SCOPE)
 endfunction()
