@@ -253,8 +253,10 @@ type WorldRequest struct {
 	KnownBattleId *uint64 `protobuf:"varint,4,opt,name=known_battle_id,json=knownBattleId,proto3,oneof" json:"known_battle_id,omitempty"`
 	// 按战果提交顺序读取战报，包括晚开战却先结算的交锋。
 	KnownReportId *uint64 `protobuf:"varint,5,opt,name=known_report_id,json=knownReportId,proto3,oneof" json:"known_report_id,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// 支持分开同步地块的客户端始终携带，首次进入或清除地块缓存时为 0。
+	KnownTileRevision *uint64 `protobuf:"varint,6,opt,name=known_tile_revision,json=knownTileRevision,proto3,oneof" json:"known_tile_revision,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *WorldRequest) Reset() {
@@ -318,6 +320,13 @@ func (x *WorldRequest) GetKnownBattleId() uint64 {
 func (x *WorldRequest) GetKnownReportId() uint64 {
 	if x != nil && x.KnownReportId != nil {
 		return *x.KnownReportId
+	}
+	return 0
+}
+
+func (x *WorldRequest) GetKnownTileRevision() uint64 {
+	if x != nil && x.KnownTileRevision != nil {
+		return *x.KnownTileRevision
 	}
 	return 0
 }
@@ -858,8 +867,10 @@ type WorldSnapshot struct {
 	TroopCapacity   uint32                 `protobuf:"varint,7,opt,name=troop_capacity,json=troopCapacity,proto3" json:"troop_capacity,omitempty"`
 	LastBattle      *WorldBattleReport     `protobuf:"bytes,8,opt,name=last_battle,json=lastBattle,proto3" json:"last_battle,omitempty"`
 	Battles         []*WorldBattle         `protobuf:"bytes,9,rep,name=battles,proto3" json:"battles,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// 当客户端已持有此版本时，回包省略 tiles，沿用缓存的地块。
+	TileRevision  *uint64 `protobuf:"varint,10,opt,name=tile_revision,json=tileRevision,proto3,oneof" json:"tile_revision,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *WorldSnapshot) Reset() {
@@ -955,6 +966,13 @@ func (x *WorldSnapshot) GetBattles() []*WorldBattle {
 	return nil
 }
 
+func (x *WorldSnapshot) GetTileRevision() uint64 {
+	if x != nil && x.TileRevision != nil {
+		return *x.TileRevision
+	}
+	return 0
+}
+
 type WorldReply struct {
 	state        protoimpl.MessageState `protogen:"open.v1"`
 	Result       WorldResult            `protobuf:"varint,1,opt,name=result,proto3,enum=slg.world.v1.WorldResult" json:"result,omitempty"`
@@ -1047,15 +1065,17 @@ const file_proto_world_proto_rawDesc = "" +
 	"\fround_battle\x18\x04 \x01(\bR\vroundBattle\x12.\n" +
 	"\x13reinforce_battle_id\x18\x05 \x01(\x04R\x11reinforceBattleId\x12+\n" +
 	"\x11continuous_battle\x18\x06 \x01(\bR\x10continuousBattle\x12*\n" +
-	"\x11retreat_battle_id\x18\a \x01(\x04R\x0fretreatBattleId\"\x8e\x02\n" +
+	"\x11retreat_battle_id\x18\a \x01(\x04R\x0fretreatBattleId\"\xdb\x02\n" +
 	"\fWorldRequest\x12%\n" +
 	"\x0eknown_instance\x18\x01 \x01(\tR\rknownInstance\x12%\n" +
 	"\x0eknown_revision\x18\x02 \x01(\x04R\rknownRevision\x12.\n" +
 	"\x05order\x18\x03 \x01(\v2\x18.slg.world.v1.MarchOrderR\x05order\x12+\n" +
 	"\x0fknown_battle_id\x18\x04 \x01(\x04H\x00R\rknownBattleId\x88\x01\x01\x12+\n" +
-	"\x0fknown_report_id\x18\x05 \x01(\x04H\x01R\rknownReportId\x88\x01\x01B\x12\n" +
+	"\x0fknown_report_id\x18\x05 \x01(\x04H\x01R\rknownReportId\x88\x01\x01\x123\n" +
+	"\x13known_tile_revision\x18\x06 \x01(\x04H\x02R\x11knownTileRevision\x88\x01\x01B\x12\n" +
 	"\x10_known_battle_idB\x12\n" +
-	"\x10_known_report_id\"^\n" +
+	"\x10_known_report_idB\x16\n" +
+	"\x14_known_tile_revision\"^\n" +
 	"\fWorldCommand\x12\x18\n" +
 	"\aaccount\x18\x01 \x01(\tR\aaccount\x124\n" +
 	"\arequest\x18\x02 \x01(\v2\x1a.slg.world.v1.WorldRequestR\arequest\"}\n" +
@@ -1108,7 +1128,7 @@ const file_proto_world_proto_rawDesc = "" +
 	"\x17attacker_reinforcements\x18\r \x01(\rR\x16attackerReinforcements\x127\n" +
 	"\x17defender_reinforcements\x18\x0e \x01(\rR\x16defenderReinforcements\x12)\n" +
 	"\x10retreated_player\x18\x0f \x01(\rR\x0fretreatedPlayer\x12\x1b\n" +
-	"\treport_id\x18\x10 \x01(\x04R\breportId\"\x94\x03\n" +
+	"\treport_id\x18\x10 \x01(\x04R\breportId\"\xd0\x03\n" +
 	"\rWorldSnapshot\x12\x1a\n" +
 	"\binstance\x18\x01 \x01(\tR\binstance\x12\x1a\n" +
 	"\brevision\x18\x02 \x01(\x04R\brevision\x12\x1f\n" +
@@ -1120,7 +1140,10 @@ const file_proto_world_proto_rawDesc = "" +
 	"\x0etroop_capacity\x18\a \x01(\rR\rtroopCapacity\x12@\n" +
 	"\vlast_battle\x18\b \x01(\v2\x1f.slg.world.v1.WorldBattleReportR\n" +
 	"lastBattle\x123\n" +
-	"\abattles\x18\t \x03(\v2\x19.slg.world.v1.WorldBattleR\abattles\"\xab\x02\n" +
+	"\abattles\x18\t \x03(\v2\x19.slg.world.v1.WorldBattleR\abattles\x12(\n" +
+	"\rtile_revision\x18\n" +
+	" \x01(\x04H\x00R\ftileRevision\x88\x01\x01B\x10\n" +
+	"\x0e_tile_revision\"\xab\x02\n" +
 	"\n" +
 	"WorldReply\x121\n" +
 	"\x06result\x18\x01 \x01(\x0e2\x19.slg.world.v1.WorldResultR\x06result\x12$\n" +
@@ -1198,6 +1221,7 @@ func file_proto_world_proto_init() {
 		return
 	}
 	file_proto_world_proto_msgTypes[1].OneofWrappers = []any{}
+	file_proto_world_proto_msgTypes[7].OneofWrappers = []any{}
 	file_proto_world_proto_msgTypes[8].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/NumberMan1/orbit/rpc"
+	"github.com/NumberMan1/orbit/socket"
 	orbittcp "github.com/NumberMan1/orbit/socket/tcp"
 	"github.com/gorilla/websocket"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -27,46 +28,15 @@ import (
 
 func TestSharedWorldOverTCPAndWebSocket(t *testing.T) {
 	t.Setenv("SLG_WORLD_IDLE_SECONDS", "60")
-	game, stopGame := startCPPGameServer(t, "127.0.0.1:0")
-	upstream, err := gateway.NewWorldConnector(game)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := upstream.Start(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		if err := upstream.Stop(ctx); err != nil {
-			t.Error(err)
-		}
-	})
-	waitForUpstream := func() {
-		t.Helper()
-		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-		defer cancel()
-		if _, err := upstream.WaitSession(ctx); err != nil {
-			t.Fatal(err)
-		}
-		if err := gateway.CheckWorldReady(ctx, upstream); err != nil {
-			t.Fatalf("world not ready: %v", err)
-		}
-	}
-	waitForUpstream()
+	game, stopGame := startCPPGameServer(t, "127.0.0.1:0", "SLG_WORLD_RADIUS=7")
+	upstream, waitForUpstream := startWorldUpstream(t, game)
 	tickets := &memoryTickets{}
 	handle := gateway.NewSessions(tickets).WorldHandler(upstream)
 	options, err := gateway.SessionOptions()
 	if err != nil {
 		t.Fatal(err)
 	}
-	tcp, err := orbittcp.NewServer("127.0.0.1:0", options, handle, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := tcp.Start(t.Context()); err != nil {
-		t.Fatal(err)
-	}
+	tcp := startWorldTCP(t, options, handle)
 	web, err := gateway.NewWebSessions(options, handle)
 	if err != nil {
 		t.Fatal(err)
@@ -74,9 +44,6 @@ func TestSharedWorldOverTCPAndWebSocket(t *testing.T) {
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
-		if err := tcp.Stop(ctx); err != nil {
-			t.Error(err)
-		}
 		if err := web.Stop(ctx); err != nil {
 			t.Error(err)
 		}
@@ -95,21 +62,13 @@ func TestSharedWorldOverTCPAndWebSocket(t *testing.T) {
 		}
 		return conn
 	}
-	exchangeTCP := func(conn net.Conn) worldExchange {
-		return func(frame rpc.Frame) (rpc.Frame, error) {
-			if err := rpc.Write(conn, frame, options.MaxPayload); err != nil {
-				return rpc.Frame{}, err
-			}
-			return rpc.Read(conn, options.MaxPayload)
-		}
-	}
 	reqID := uint16(pb.WorldMessageId_WORLD_MESSAGE_ID_REQUEST)
-	if _, err := exchangeTCP(connectTCP())(rpc.Frame{ID: reqID, Sequence: 1}); err != io.EOF {
+	if _, err := exchangeWorldTCP(connectTCP(), options.MaxPayload)(rpc.Frame{ID: reqID, Sequence: 1}); err != io.EOF {
 		t.Fatalf("unauthenticated world query: %v", err)
 	}
 
 	aConn := connectTCP()
-	a := exchangeTCP(aConn)
+	a := exchangeWorldTCP(aConn, options.MaxPayload)
 	authenticateWorld(t, tickets, a, "player-a")
 	bConn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(webURL, "http")+"/v1/session",
 		http.Header{"Origin": []string{webURL}})
@@ -138,10 +97,10 @@ func TestSharedWorldOverTCPAndWebSocket(t *testing.T) {
 
 	// 两个不同传输上的账号进入同一张地图，并获得不同的出生地。
 	aState := queryWorld(t, a, &pb.WorldRequest{}).GetSnapshot()
-	bState := queryWorld(t, b, &pb.WorldRequest{}).GetSnapshot()
+	bState := queryWorld(t, b, &pb.WorldRequest{KnownTileRevision: proto.Uint64(0)}).GetSnapshot()
 	if aState.GetYourPlayer() != 1 || bState.GetYourPlayer() != 2 ||
 		aState.GetInstance() == "" || aState.GetInstance() != bState.GetInstance() ||
-		len(bState.GetTiles()) != 19 {
+		len(bState.GetTiles()) != 169 || len(aState.GetTiles()) != 169 || bState.GetTileRevision() == 0 || aState.TileRevision != nil {
 		t.Fatalf("invalid shared world: %v / %v", aState, bState)
 	}
 	if unchanged := queryWorld(t, b, knownWorld(bState)); unchanged.GetSnapshot() != nil {
@@ -157,20 +116,27 @@ func TestSharedWorldOverTCPAndWebSocket(t *testing.T) {
 	if started.GetResult() != pb.WorldResult_WORLD_RESULT_OK || len(started.GetSnapshot().GetMarches()) != 1 {
 		t.Fatalf("march did not start: %v", started)
 	}
-	bMarching := queryWorld(t, b, knownWorld(bState)).GetSnapshot()
-	if len(bMarching.GetMarches()) != 1 || bMarching.GetMarches()[0].GetTargetTileId() != target.GetId() {
-		t.Fatal("player B did not see player A's march")
+	bDelta := knownWorld(bState)
+	bDelta.KnownTileRevision = bState.TileRevision
+	bMarching := queryWorld(t, b, bDelta).GetSnapshot()
+	if len(bMarching.GetMarches()) != 1 || bMarching.GetMarches()[0].GetTargetTileId() != target.GetId() ||
+		len(bMarching.GetTiles()) != 0 || bMarching.GetTileRevision() != bState.GetTileRevision() {
+		t.Fatalf("player B should receive the march and keep cached tiles: %v", bMarching)
 	}
 	_ = aConn.Close()
 	saved := started.GetSnapshot()
-	reconnected := exchangeTCP(connectTCP())
+	reconnected := exchangeWorldTCP(connectTCP(), options.MaxPayload)
 	authenticateWorld(t, tickets, reconnected, "player-a")
 
 	// 等待真实进程结算，再用原指令重试，确认重连不会再次派兵。
 	deadline := time.Now().Add(5 * time.Second)
+	bDelta.KnownRevision = bMarching.GetRevision()
 	for {
-		updated := queryWorld(t, b, knownWorld(bMarching)).GetSnapshot()
+		updated := queryWorld(t, b, bDelta).GetSnapshot()
 		if updated != nil && tileAt(updated, -1, 0).GetOwner() == 1 && len(updated.GetMarches()) == 0 {
+			if len(updated.GetTiles()) != 169 || updated.GetTileRevision() == bState.GetTileRevision() {
+				t.Fatalf("capture should refresh tile data: %v", updated)
+			}
 			break
 		}
 		if time.Now().After(deadline) {
@@ -600,9 +566,17 @@ func TestContinuousCombatReinforcementsAndRetreat(t *testing.T) {
 	attack := makeOrder(west, "attack-center", 0, 60)
 	attack.Order.ContinuousBattle = true
 	send(west, attack)
+	cached := world(west, &pb.WorldRequest{KnownTileRevision: proto.Uint64(0), KnownReportId: proto.Uint64(0)}).GetSnapshot()
 	started := live(waitFor(func(snapshot *pb.WorldSnapshot) bool { return live(snapshot).GetRound() >= 2 }))
 	if !started.GetContinuous() || started.GetRounds() != 0 || started.GetAttackerTroops() >= 60 || started.GetDefenderTroops() >= 60 {
 		t.Fatalf("the first exchange should apply local losses without settling the battle: %v", started)
+	}
+	combatSync := knownWorld(cached)
+	combatSync.KnownTileRevision = cached.TileRevision
+	combatSync.KnownReportId = proto.Uint64(0)
+	if delta := world(west, combatSync).GetSnapshot(); live(delta).GetRound() < started.GetRound() ||
+		len(delta.GetTiles()) != 0 || delta.GetTileRevision() != cached.GetTileRevision() {
+		t.Fatalf("ongoing rounds should update combat state without resending unchanged tiles: %v", delta)
 	}
 	wests := makeOrder(west, "west-support", 0, 40)
 	easts := makeOrder(east, "east-support", 0, 40)
@@ -687,10 +661,10 @@ func directWorld(t *testing.T, address string) func(string, *pb.WorldRequest) *p
 			t.Fatal(err)
 		}
 		sequence++
-		if err := rpc.Write(connection, rpc.Frame{ID: uint16(pb.WorldMessageId_WORLD_MESSAGE_ID_REQUEST), Sequence: sequence, Payload: data}, 8192); err != nil {
+		if err := rpc.Write(connection, rpc.Frame{ID: uint16(pb.WorldMessageId_WORLD_MESSAGE_ID_REQUEST), Sequence: sequence, Payload: data}, 32768); err != nil {
 			t.Fatal(err)
 		}
-		frame, err := rpc.Read(connection, 8192)
+		frame, err := rpc.Read(connection, 32768)
 		var reply pb.WorldReply
 		if err != nil || frame.Sequence != sequence || frame.ID != uint16(pb.WorldMessageId_WORLD_MESSAGE_ID_REPLY) ||
 			protojson.Unmarshal(frame.Payload, &reply) != nil {
@@ -701,6 +675,65 @@ func directWorld(t *testing.T, address string) func(string, *pb.WorldRequest) *p
 }
 
 type worldExchange func(rpc.Frame) (rpc.Frame, error)
+
+func startWorldUpstream(t *testing.T, game string) (*socket.Connector, func()) {
+	t.Helper()
+	upstream, err := gateway.NewWorldConnector(game)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := upstream.Start(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := upstream.Stop(ctx); err != nil {
+			t.Error(err)
+		}
+	})
+	waitReady := func() {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+		defer cancel()
+		if _, err := upstream.WaitSession(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if err := gateway.CheckWorldReady(ctx, upstream); err != nil {
+			t.Fatalf("world not ready: %v", err)
+		}
+	}
+	waitReady()
+	return upstream, waitReady
+}
+
+func startWorldTCP(t *testing.T, options socket.Options, handle socket.Handler) *orbittcp.Server {
+	t.Helper()
+	tcp, err := orbittcp.NewServer("127.0.0.1:0", options, handle, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tcp.Start(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := tcp.Stop(ctx); err != nil {
+			t.Error(err)
+		}
+	})
+	return tcp
+}
+
+func exchangeWorldTCP(conn net.Conn, maxPayload int) worldExchange {
+	return func(frame rpc.Frame) (rpc.Frame, error) {
+		if err := rpc.Write(conn, frame, maxPayload); err != nil {
+			return rpc.Frame{}, err
+		}
+		return rpc.Read(conn, maxPayload)
+	}
+}
 
 func authenticateWorld(t *testing.T, tickets *memoryTickets, send worldExchange, account string) {
 	t.Helper()
@@ -751,7 +784,7 @@ func tileAt(snapshot *pb.WorldSnapshot, q, r int32) *pb.WorldTile {
 	return nil
 }
 
-func startCPPGameServer(t *testing.T, address string) (string, func()) {
+func startCPPGameServer(t *testing.T, address string, extraEnv ...string) (string, func()) {
 	t.Helper()
 	const binaryEnv, readyPrefix = "SLG_TEST_GAME_SERVER", "game-server rpc listening "
 	binary := os.Getenv(binaryEnv)
@@ -759,7 +792,9 @@ func startCPPGameServer(t *testing.T, address string) (string, func()) {
 		t.Skipf("run scripts/verify.sh to set %s", binaryEnv)
 	}
 	process := exec.CommandContext(t.Context(), binary)
-	process.Env = append(process.Environ(), "SLG_GAME_ADDR=127.0.0.1:0", "SLG_GAME_RPC_ADDR="+address)
+	process.Env = append(process.Environ(), "SLG_GAME_ADDR=127.0.0.1:0", "SLG_GAME_RPC_ADDR="+address,
+		"SLG_MYSQL_DSN=", "SLG_GAME_MYSQL_DSN=", "SLG_MYSQL_ADDRESS=", "SLG_WORLD_ID=", "SLG_WORLD_CHECKPOINT_SECONDS=30", "SLG_WORLD_RADIUS=2")
+	process.Env = append(process.Env, extraEnv...)
 	process.Stderr = os.Stderr
 	output, err := process.StdoutPipe()
 	if err != nil {
@@ -790,7 +825,7 @@ func startCPPGameServer(t *testing.T, address string) (string, func()) {
 			return addr, stop
 		}
 		t.Fatalf("unexpected %s startup output: %q", binaryEnv, line)
-	case <-time.After(3 * time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatalf("%s did not start", binaryEnv)
 	}
 	return "", nil

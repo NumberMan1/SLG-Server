@@ -19,7 +19,7 @@ import (
 
 const (
 	worldClientKey  = "slg.world-client"
-	maxWorldPayload = 8192
+	maxWorldPayload = 32768
 	// 与 C++ 游戏服的 max_pending_per_connection 一致，在网关限制待处理请求。
 	maxWorldPending = 8
 	worldRequestID  = uint16(pb.WorldMessageId_WORLD_MESSAGE_ID_REQUEST)
@@ -82,6 +82,8 @@ func worldClient(session *socket.Session) (*request.Client, bool) {
 
 // WorldHandler 在已认证的长连接上转发玩法请求，账号由网关从会话中填写。
 func (s *Sessions) WorldHandler(upstream *socket.Connector) socket.Handler {
+	// 指令等待提交期间保留一半上游名额给地图查询和探活。
+	writes := make(chan struct{}, maxWorldPending/2)
 	return func(ctx context.Context, session *socket.Session, frame rpc.Frame) error {
 		if frame.ID == uint16(pb.SessionMessageId_SESSION_MESSAGE_ID_CONNECT_REQUEST) {
 			return s.Connect(ctx, session, frame)
@@ -89,14 +91,26 @@ func (s *Sessions) WorldHandler(upstream *socket.Connector) socket.Handler {
 		value, authenticated := session.Value(sessionKey)
 		account, _ := value.(string)
 		if !authenticated || account == "" || frame.Sequence == 0 ||
-			frame.ID != worldRequestID {
+			frame.ID != worldRequestID || len(frame.Payload) > maxSessionPayload {
 			return errors.New("invalid world frame")
 		}
 		var request pb.WorldRequest
 		if err := proto.Unmarshal(frame.Payload, &request); err != nil {
 			return err
 		}
-		payload, err := requestWorld(ctx, upstream, &pb.WorldCommand{Account: account, Request: &request})
+		var payload []byte
+		var err error
+		if request.GetOrder() != nil {
+			select {
+			case writes <- struct{}{}:
+				defer func() { <-writes }()
+			default:
+				err = errors.New("world write capacity reached")
+			}
+		}
+		if err == nil {
+			payload, err = requestWorld(ctx, upstream, &pb.WorldCommand{Account: account, Request: &request})
+		}
 		if err != nil {
 			payload, err = proto.Marshal(&pb.WorldReply{Result: pb.WorldResult_WORLD_RESULT_UNAVAILABLE})
 			if err != nil {
@@ -121,17 +135,20 @@ func connectedWorldClient(upstream *socket.Connector) (*request.Client, error) {
 	return client, nil
 }
 
-// CheckWorldReady 通过实际玩法连接往返探活帧，验证 Orbit 两端能够交换消息。
+// CheckWorldReady 通过玩法连接确认游戏服可响应，且持久世界可以接受新写入。
 func CheckWorldReady(ctx context.Context, upstream *socket.Connector) error {
 	client, err := connectedWorldClient(upstream)
 	if err != nil {
 		return err
 	}
 	reply, err := client.Call(ctx, rpc.Frame{ID: worldProbeID}, worldProbeReplyID)
-	if err == nil && len(reply.Payload) != 0 {
-		return errors.New("invalid game readiness response")
+	if err != nil || len(reply.Payload) == 0 {
+		return err
 	}
-	return err
+	if len(reply.Payload) == 1 && reply.Payload[0] == 1 {
+		return errors.New("game world persistence is unavailable")
+	}
+	return errors.New("invalid game readiness response")
 }
 
 func requestWorld(ctx context.Context, upstream *socket.Connector, command *pb.WorldCommand) ([]byte, error) {
@@ -156,7 +173,7 @@ func requestWorld(ctx context.Context, upstream *socket.Connector, command *pb.W
 	if err != nil {
 		return nil, err
 	}
-	if len(payload) == 0 || len(payload) > maxSessionPayload {
+	if len(payload) == 0 || len(payload) > maxWorldReplyPayload {
 		return nil, errors.New("invalid world reply size")
 	}
 	return payload, nil

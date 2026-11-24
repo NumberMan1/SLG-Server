@@ -51,7 +51,11 @@ sh scripts/dev.sh status
 | `SLG_GATEWAY_TCP_PORT` | `19090` | Unity 从登录响应获得的 TCP 端口 |
 | `SLG_WEB_ROOT` | 空 | 直接运行网关时可填 Unity Web 构建目录，在同一 HTTP 站点提供试玩页面 |
 | `SLG_MYSQL_DSN` | 登录服务必填 | MySQL 连接串，其中数据库需提前创建 |
-| `SLG_MYSQL_ADDRESS` | 空 | 直接运行登录服务时可覆盖 MySQL TCP 地址，沿用连接串中的凭据和数据库 |
+| `SLG_GAME_MYSQL_DSN` | 使用 `SLG_MYSQL_DSN` | 可选，游戏服专用 TCP DSN。若指向独立数据库，先对该库执行迁移 |
+| `SLG_MYSQL_ADDRESS` | 空 | 直接运行进程时可覆盖 MySQL TCP 地址，沿用连接串中的凭据和数据库 |
+| `SLG_WORLD_ID` | `frontier` | 同一数据库内的地图存档 ID，长度最多 64 字节。每个 ID 由一个游戏服进程写入 |
+| `SLG_WORLD_RADIUS` | `2` | 六边形地图半径，支持 2 到 7。扩图保留已有地块 ID。半径大于 2 时需要新版网关和 Unity |
+| `SLG_WORLD_CHECKPOINT_SECONDS` | `30` | 有未覆盖的事件时生成后台快照的间隔。累计 128 个事件可提前触发 |
 | `SLG_REDIS_MODE` | `cluster` | Redis 连接模式 |
 | `SLG_REDIS_ADDRESSES` | Dev 脚本在 `gm-dev` 网络使用三个 `gm-redis-*` 节点，其他网络使用三个 `slg-dev-redis-*` 节点。直接运行网关使用 `127.0.0.1:6379` | Cluster 种子地址以逗号分隔，单机模式必须填写一个地址 |
 | `SLG_REDIS_USERNAME`、`SLG_REDIS_PASSWORD` | 空 | Redis ACL 凭据 |
@@ -85,7 +89,7 @@ sh scripts/dev.sh up
 
 启动脚本会应用 [MySQL 迁移](database/README.md)。玩家可在 Unity 登录页用 **注册账号** 创建账号。填写 `SLG_DEMO_PASSWORD` 时，启动脚本也可以创建 `SLG_DEMO_ACCOUNT` 指定的联调账号，默认为 `demo`。修改 HTTP 端口后，在 Unity 登录场景填写新的网关地址。
 
-启动脚本通过网关的 `/readyz` 检查登录服、MySQL、Redis 票据读写和 Orbit 游戏连接。全部可用时返回 `204`。`/v1/game/health` 返回游戏服的存活状态。联调结束后可执行 `down` 停止并删除 SLG 容器。
+启动脚本通过网关的 `/readyz` 检查登录服、MySQL、Redis 票据读写、Orbit 游戏连接和世界事件流的写入状态。全部可用时返回 `204`。`/v1/game/health` 返回游戏服的存活状态。联调结束后可执行 `down` 停止并删除 SLG 容器，MySQL 中的世界快照和后续事件以 `SLG_WORLD_ID` 保留。
 
 ```sh
 curl -i http://127.0.0.1:8080/readyz
@@ -112,7 +116,11 @@ VS Code 的 Go 网关、登录服和 Podman 共用 `.env`。在 `.env` 明确填
 
 ## 运行校验
 
-在服务端仓库根目录执行。C++ 游戏服使用 CMake 3.20 或更新版本，并沿用 Orbit 的 C++23 要求。战斗规则库使用 C++20。有 Ninja 时脚本默认使用 Ninja，也可以通过 `SLG_CMAKE_GENERATOR` 指定生成器。脚本构建游戏服，运行战斗规则测试和真实进程联通用例。可用 `SLG_GAME_BUILD_DIR` 覆盖构建目录。
+在服务端仓库根目录执行。C++ 游戏服使用 CMake 3.20 或更新版本、支持 C++23 的工具链和 MariaDB Connector/C。Ubuntu/Debian 安装 `libmariadb-dev`，Alpine 安装 `mariadb-connector-c-dev`，macOS 可用 Homebrew 安装 `mariadb-connector-c`。Windows 可安装官方 Connector/C 或使用 MSYS2 的 `mingw-w64-ucrt-x86_64-libmariadbclient`。将 `SLG_MARIADB_ROOT` 指到包含 `include` 和 `lib` 的安装目录，并将 Connector/C 的 DLL 目录加入 PATH。战斗规则库使用 C++20。[MariaDB Connector/C 安装说明](https://mariadb.com/docs/connectors/mariadb-connector-c/mariadb-connector-c-guide)
+
+直接运行游戏服时，可在同一终端设置 `SLG_MYSQL_DSN` 或 `SLG_GAME_MYSQL_DSN` 接入已迁移的 MySQL。C++ 游戏服使用 `user[:password]@tcp(host:port)/database`，可加 `tls=true` 启用 TLS 与证书校验。`parseTime`、`loc`、`charset=utf8mb4`、`timeout`、`readTimeout` 和 `writeTimeout` 可与 Go 配置共用。Connector/C 的超时按秒传入，正数带小数时向上取整。两项 DSN 都为空且未指定 `SLG_WORLD_ID` 时使用临时内存世界。
+
+有 Ninja 时脚本默认使用 Ninja，也可以通过 `SLG_CMAKE_GENERATOR` 指定生成器。脚本构建游戏服，运行战斗规则测试和真实进程联通用例。可用 `SLG_GAME_BUILD_DIR` 覆盖构建目录。
 
 验证 Orbit 的 C++ 上游改动时，可把环境变量 `SLG_ORBIT_CPP_DIR` 设为本地 Orbit 的 `cpp` 目录（例如 `D:/go/src/github.com/NumberMan1/orbit/cpp`）。本机构建与 Podman 源码暂存均识别此变量。默认使用 `go.mod` 锁定的发布版本。
 
@@ -132,6 +140,6 @@ ctest --test-dir .build/internal/game -C Debug --output-on-failure
 
 Server CI 在 `develop`、`master` 的推送和目标为这两个分支的同仓 PR 上运行，也支持手动运行。它使用临时 MySQL、单机 Redis 和 etcd 验证登录转发、TCP 票据和服务发现，构建 C++ 游戏服并验证战斗规则、共享地图、战斗结果和游戏服重连，同时构建两个 Go 进程。
 
-本地可在校验命令前提供 `SLG_TEST_MYSQL_DSN`、`SLG_TEST_REDIS_ADDRESSES`、`SLG_TEST_REDIS_PASSWORD` 和 `SLG_TEST_ETCD_ENDPOINTS`，复用真实中间件。Redis 集群测试额外设置 `SLG_TEST_REDIS_MODE=cluster`。登录中间件用例会应用建表迁移并删除本次创建的测试账号。
+本地可在校验命令前提供 `SLG_TEST_MYSQL_DSN`、`SLG_TEST_REDIS_ADDRESSES`、`SLG_TEST_REDIS_PASSWORD` 和 `SLG_TEST_ETCD_ENDPOINTS`，复用真实中间件。Redis 集群测试额外设置 `SLG_TEST_REDIS_MODE=cluster`。真实 MySQL 用例会应用迁移并清理本次创建的测试账号和世界数据。世界恢复用例覆盖事件回放、检查点压缩、快照慢写期间的指令确认、战斗时序和旧存档迁移。
 
 在 SLG-Server 的 **Settings → Secrets and variables → Actions** 添加 `ORBIT_READ_TOKEN`。使用仅对 `NumberMan1/orbit` 有 **Contents: Read-only** 权限的细粒度 GitHub token。来自 fork 或 Dependabot 的 PR 跳过该任务。[GitHub 凭据配置](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens)

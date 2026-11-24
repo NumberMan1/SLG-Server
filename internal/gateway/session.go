@@ -14,9 +14,10 @@ import (
 )
 
 const (
-	protocolVersion   = 1
-	sessionKey        = "slg.account"
-	maxSessionPayload = 1024
+	protocolVersion      = 1
+	sessionKey           = "slg.account"
+	maxSessionPayload    = 1024
+	maxWorldReplyPayload = 8192
 )
 
 type ticketConsumer interface {
@@ -37,7 +38,7 @@ func NewSessions(tickets ticketConsumer) *Sessions {
 func SessionOptions() (socket.Options, error) {
 	admission, err := socket.NewAdmission(128, 16)
 	return socket.Options{
-		Admission: admission, MaxPayload: maxSessionPayload, SendQueue: 16,
+		Admission: admission, MaxPayload: maxWorldReplyPayload, SendQueue: 16,
 		ReadTimeout: 15 * time.Second, WriteTimeout: 5 * time.Second,
 	}, err
 }
@@ -45,7 +46,8 @@ func SessionOptions() (socket.Options, error) {
 // Connect 校验握手帧，消费票据后为连接绑定账号，并按请求序号返回会话信息。
 func (s *Sessions) Connect(ctx context.Context, session *socket.Session, frame rpc.Frame) error {
 	if _, authenticated := session.Value(sessionKey); authenticated ||
-		frame.ID != uint16(sessionpb.SessionMessageId_SESSION_MESSAGE_ID_CONNECT_REQUEST) || frame.Sequence == 0 {
+		frame.ID != uint16(sessionpb.SessionMessageId_SESSION_MESSAGE_ID_CONNECT_REQUEST) || frame.Sequence == 0 ||
+		len(frame.Payload) > maxSessionPayload {
 		return errors.New("invalid connect frame")
 	}
 	var request sessionpb.ConnectRequest

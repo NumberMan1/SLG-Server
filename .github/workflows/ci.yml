@@ -90,7 +90,10 @@ jobs:
           SLG_TEST_MYSQL_DSN: slg:slg-ci@tcp(127.0.0.1:${{ job.services.mysql.ports['3306'] }})/slg
           SLG_TEST_REDIS_ADDRESSES: 127.0.0.1:${{ job.services.redis.ports['6379'] }}
           SLG_TEST_ETCD_ENDPOINTS: http://127.0.0.1:${{ job.services.etcd.ports['2379'] }}
-        run: sh scripts/verify.sh
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libmariadb-dev
+          sh scripts/verify.sh
 
       - name: Build Go services
         run: go build ./cmd/...

@@ -164,6 +164,10 @@ if [ "$http_port" -eq "$tcp_port" ]; then
 fi
 : "${SLG_MYSQL_DSN:?Set SLG_MYSQL_DSN to a MySQL database reachable from the SLG containers}"
 export SLG_MYSQL_DSN
+export SLG_GAME_MYSQL_DSN=${SLG_GAME_MYSQL_DSN:-}
+export SLG_WORLD_ID=${SLG_WORLD_ID:-frontier}
+export SLG_WORLD_RADIUS=${SLG_WORLD_RADIUS:-2}
+export SLG_WORLD_CHECKPOINT_SECONDS=${SLG_WORLD_CHECKPOINT_SECONDS:-30}
 export SLG_REDIS_MODE=${SLG_REDIS_MODE:-cluster}
 if [ "$SLG_REDIS_MODE" = cluster ]; then
     export SLG_REDIS_ADDRESSES=${SLG_REDIS_ADDRESSES:-$redis_addresses}
@@ -225,9 +229,9 @@ if command -v cygpath >/dev/null 2>&1; then
     containerfile=$(cygpath -m "$containerfile")
     build_dir=$(cygpath -m "$build_dir")
 fi
-run_podman build --file "$containerfile" --tag "$image" "$build_dir"
+run_podman build --http-proxy=false --file "$containerfile" --tag "$image" "$build_dir"
 
-# 先准备账号表及可选演示账号，再启动常驻服务。
+# 先迁移账号与世界存档表及准备可选演示账号，再启动常驻服务。
 run_podman run --rm --network "$network" --env SLG_MYSQL_DSN "$image" /slg/login-server migrate
 if [ -n "${SLG_DEMO_PASSWORD:-}" ]; then
     export SLG_ACCOUNT=${SLG_DEMO_ACCOUNT:-demo}
@@ -238,8 +242,8 @@ fi
 
 # 应用容器通过 Podman 网络 DNS 访问依赖和其他服务。
 set -- run --detach --replace --http-proxy=false --network "$network" --label "$owner_label"
-run_podman "$@" --name "$game_server" --env SLG_GAME_ADDR=0.0.0.0:8081 --env SLG_GAME_RPC_ADDR=0.0.0.0:8083 \
-    --env SLG_WORLD_IDLE_SECONDS \
+run_podman "$@" --name "$game_server" --restart=on-failure --env SLG_GAME_ADDR=0.0.0.0:8081 --env SLG_GAME_RPC_ADDR=0.0.0.0:8083 \
+    --env SLG_WORLD_IDLE_SECONDS --env SLG_WORLD_ID --env SLG_WORLD_RADIUS --env SLG_WORLD_CHECKPOINT_SECONDS --env SLG_GAME_MYSQL_DSN --env SLG_MYSQL_DSN \
     "$image" /slg/game-server
 run_podman "$@" --name "$login_server" --env SLG_LOGIN_ADDR=0.0.0.0:8082 \
     --env "SLG_LOGIN_ADVERTISE_URL=http://$login_server:8082" \

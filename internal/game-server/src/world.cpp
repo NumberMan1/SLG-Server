@@ -16,7 +16,6 @@ namespace {
 using Json = nlohmann::json;
 constexpr std::uint32_t defaultMarchTroops = 40;
 constexpr unsigned int reinforcementsPerSecond = 5;
-constexpr std::size_t battleReportLimit = 8;
 constexpr unsigned int battleRounds = 3;
 constexpr auto roundDuration = std::chrono::seconds(6);
 constexpr auto combatInterval = std::chrono::seconds(1);
@@ -37,6 +36,12 @@ std::string instanceId() {
     return output.str();
 }
 
+std::uint64_t syncRevisionOffset(const std::string& instance) {
+    std::uint64_t offset = 0;
+    std::from_chars(instance.data(), instance.data() + 15, offset, 16);
+    return offset;
+}
+
 std::int64_t unixMilliseconds() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::system_clock::now().time_since_epoch()).count();
@@ -55,25 +60,25 @@ std::uint64_t knownRevision(const Json& value) {
 
 }  // 匿名命名空间
 
-World::World(std::chrono::seconds seatIdleTimeout)
-    : instance_(instanceId()), seatIdleTimeout_(seatIdleTimeout) {
-    for (int r = -2; r <= 2; ++r) {
-        for (int q = -2; q <= 2; ++q) {
-            if (std::abs(q + r) > 2) {
-                continue;
+World::World(std::chrono::seconds seatIdleTimeout, int radius)
+    : instance_(instanceId()), syncRevisionOffset_(syncRevisionOffset(instance_)), seatIdleTimeout_(seatIdleTimeout), radius_(radius) {
+    if (radius < 2 || radius > 7) throw std::invalid_argument("SLG_WORLD_RADIUS must be between 2 and 7");
+    // 保留原始 19 个地块的 ID，扩图时逐环追加，已有行军、战斗和存档仍使用原 ID。
+    for (int ring = 2; ring <= radius; ++ring) {
+        for (int r = -ring; r <= ring; ++r) {
+            for (int q = -ring; q <= ring; ++q) {
+                const auto distance = std::max({std::abs(q), std::abs(r), std::abs(q + r)});
+                if (distance > ring || (ring > 2 && distance < ring)) continue;
+                Tile tile{static_cast<int>(tiles_.size()) + 1, q, r};
+                if (r == 0 && (q == -2 || q == 2)) tile.home = q == -2 ? 1 : 2;
+                tiles_.push_back(tile);
             }
-            Tile tile{static_cast<int>(tiles_.size()) + 1, q, r};
-            if (r == 0 && (q == -2 || q == 2)) {
-                tile.home = q == -2 ? 1 : 2;
-            }
-            tiles_.push_back(tile);
         }
     }
 }
 
-Json World::update(const std::string& account, const Json& request) {
+World::Result World::update(const std::string& account, const Json& request) {
     const auto now = Clock::now();
-    const auto unixMs = unixMilliseconds();
     step(now);
     const auto order = request.find("order");
     auto index = findPlayer(account);
@@ -93,9 +98,29 @@ Json World::update(const std::string& account, const Json& request) {
                 ? Result::invalid_order : Result::world_changed;
         }
     } else if (order != request.end()) {
-        result = request.contains("known_instance") && request["known_instance"] == instance_
-            ? placeOrder(index, *order, now) : Result::world_changed;
+        const auto known = request.find("known_instance");
+        result = known != request.end() && known->is_string() && !known->get_ref<const std::string&>().empty()
+            ? placeOrder(index, *order, now, *known == instance_) : Result::world_changed;
     }
+    return result;
+}
+
+Json World::read(const std::string& account, const Json& request, std::optional<Result> result) const {
+    const auto index = findPlayer(account);
+    return reply(index, result.value_or(index >= 0 ? Result::ok : Result::full), request, Clock::now());
+}
+
+bool World::hasPlayer(const std::string& account) const { return findPlayer(account) >= 0; }
+bool World::hasOpenSeat() const { return findPlayer("") >= 0; }
+
+void World::touch(const std::string& account) {
+    if (const auto index = findPlayer(account); index >= 0) {
+        players_[index].lastSeen = Clock::now();
+    }
+}
+
+Json World::reply(int index, Result result, const Json& request, Clock::time_point now) const {
+    const auto unixMs = unixMilliseconds();
     Json reply{{"result", static_cast<int>(result)}, {"server_time_ms", unixMs}};
     if (index >= 0) {
         const bool sameInstance = request.contains("known_instance") && request["known_instance"] == instance_;
@@ -103,13 +128,24 @@ Json World::update(const std::string& account, const Json& request) {
         const auto reportCursor = request.find("known_report_id");
         const bool incremental = battleCursor != request.end() || reportCursor != request.end();
         const auto firstPending = engagements_.empty() ? nextBattleId_ : engagements_.begin()->first;
-        // 新客户端单独读取私有兵力。旧客户端仅在自身兵力变化时刷新完整快照。
-        const auto revision = incremental ? revision_ : std::max(revision_, players_[index].reserveRevision);
-        if (!sameInstance || !request.contains("known_revision") || knownRevision(request["known_revision"]) != revision) {
-            reply["snapshot"] = snapshot(index, revision, now, unixMs);
+        const auto reserves = reservesAt(players_[index], now);
+        // 旧客户端用地图版本和补兵进度共同判断快照。超过补兵上限的变化均来自地图事件。
+        // 重启会重新计算绝对到点时间，因此同步版本包含本进程标记；存档实例仍用于原指令重试。
+        const auto layoutOffset = static_cast<std::uint64_t>(radius_ - 2) << 52;
+        const auto mapRevision = revision_ + layoutOffset;
+        const auto revision = syncRevisionOffset_ + (incremental ? mapRevision
+            : mapRevision * (battle::maximumTroops + 1) + std::min(reserves, battle::maximumTroops));
+        const auto tileRevision = tileRevision_ + layoutOffset;
+        const auto knownTiles = request.find("known_tile_revision");
+        const bool tracksTiles = knownTiles != request.end();
+        const bool reuseTiles = tracksTiles && sameInstance && knownRevision(*knownTiles) == tileRevision;
+        if (!sameInstance || !request.contains("known_revision") || knownRevision(request["known_revision"]) != revision ||
+            (tracksTiles && !reuseTiles)) {
+            reply["snapshot"] = snapshot(index, revision, reserves, now, unixMs, !reuseTiles);
+            if (tracksTiles) reply["snapshot"]["tile_revision"] = tileRevision;
         }
         if (incremental) {
-            reply["available_troops"] = players_[index].reserves;
+            reply["available_troops"] = reserves;
         }
         if (reportCursor != request.end()) {
             const auto after = sameInstance ? knownRevision(*reportCursor) : 0;
@@ -149,10 +185,12 @@ int World::join(const std::string& account, Clock::time_point now) {
         return -1;
     }
     players_[index].account = account;
+    players_[index].seat = nextRevision_;
+    players_[index].orders = std::make_shared<OrderHistory>();
     players_[index].lastReinforcement = now;
     for (auto& tile : tiles_) {
         if (tile.home == index + 1) {
-            tile.owner = index + 1;
+            setTileState(tile, index + 1, tile.garrison);
             break;
         }
     }
@@ -160,21 +198,22 @@ int World::join(const std::string& account, Clock::time_point now) {
     return index;
 }
 
-World::Result World::placeOrder(int index, const Json& order, Clock::time_point now) {
+World::Result World::placeOrder(int index, const Json& order, Clock::time_point now, bool sameInstance) {
+    const auto rejected = sameInstance ? Result::invalid_order : Result::world_changed;
     if (!order.is_object() || !order.contains("command_id") || !order["command_id"].is_string() ||
         !order.contains("target_tile_id") || !order["target_tile_id"].is_number_unsigned()) {
-        return Result::invalid_order;
+        return rejected;
     }
     const auto& id = order["command_id"].get_ref<const std::string&>();
     const auto targetId = order["target_tile_id"].get<std::uint64_t>();
     const auto troops = order.find("troops");
     if (troops != order.end() && !troops->is_number_unsigned()) {
-        return Result::invalid_order;
+        return rejected;
     }
     const auto rounds = order.find("round_battle");
     const auto continuous = order.find("continuous_battle");
     if ((rounds != order.end() && !rounds->is_boolean()) || (continuous != order.end() && !continuous->is_boolean()))
-        return Result::invalid_order;
+        return rejected;
     const bool roundBattle = rounds != order.end() && rounds->get<bool>();
     const bool continuousBattle = continuous != order.end() && continuous->get<bool>();
     const auto battleId = order.find("reinforce_battle_id");
@@ -187,17 +226,18 @@ World::Result World::placeOrder(int index, const Json& order, Clock::time_point 
         (retreatId != order.end() && withdrawing == 0) || (count == 0 && withdrawing == 0) ||
         ((reinforcement || withdrawing) && (roundBattle || continuousBattle)) ||
         (withdrawing != 0 && (reinforcement != 0 || troops != order.end()))) {
-        return Result::invalid_order;
+        return rejected;
     }
     const auto mode = continuousBattle ? CombatMode::continuous : roundBattle ? CombatMode::rounds : CombatMode::instant;
     const PlacedOrder placed{static_cast<int>(targetId), static_cast<std::uint32_t>(count), mode, reinforcement, withdrawing};
 
     auto& player = players_[index];
-    // 成功指令保留 ID，跨连接重试也只会生成一支部队。
-    if (const auto prior = player.orders.find(id); prior != player.orders.end()) {
-        return prior->second == placed ? Result::ok : Result::invalid_order;
+    // 其他席位回收会更换世界实例。原席位可以确认相同的已提交指令，旧实例不能执行新指令。
+    if (const auto prior = player.orders->find(id); prior != player.orders->end()) {
+        return prior->second == placed ? Result::ok : rejected;
     }
-    if (withdrawing != 0) return retreat(index, id, placed);
+    if (!sameInstance) return Result::world_changed;
+    if (withdrawing != 0) return retreat(index, id, placed, now);
     if (player.marching) {
         return Result::already_marching;
     }
@@ -226,11 +266,12 @@ World::Result World::placeOrder(int index, const Json& order, Clock::time_point 
             }
         }
     }
-    if (count > player.reserves) return Result::insufficient_troops;
+    if (count > reservesAt(player, now)) return Result::insufficient_troops;
     for (const auto& source : tiles_) {
         const int q = source.q - target.q, r = source.r - target.r;
         if (source.owner == index + 1 && std::max({std::abs(q), std::abs(r), std::abs(q + r)}) == 1) {
-            player.orders.emplace(id, placed);
+            rememberOrder(player, id, placed);
+            settleReserves(player, now);
             const bool replenishing = player.reserves < battle::maximumTroops;
             player.reserves -= placed.troops;
             if (!replenishing && player.reserves < battle::maximumTroops) player.lastReinforcement = now;
@@ -242,7 +283,7 @@ World::Result World::placeOrder(int index, const Json& order, Clock::time_point 
     return Result::invalid_target;
 }
 
-World::Result World::retreat(int index, const std::string& commandId, const PlacedOrder& order) {
+World::Result World::retreat(int index, const std::string& commandId, const PlacedOrder& order, Clock::time_point now) {
     const auto found = engagements_.find(order.retreat);
     if (found == engagements_.end() || !found->second.continuous()) return Result::battle_closed;
     const auto& engagement = found->second;
@@ -253,10 +294,57 @@ World::Result World::retreat(int index, const std::string& commandId, const Plac
     // 处理指令前已经结算到期交锋，撤退使用当时仍在场的全部兵力。
     const battle::Result result{task.request.attackerTroops + engagement.attackerWaiting,
                                 task.request.defenderTroops + engagement.defenderWaiting, task.defender == player};
-    players_[index].orders.emplace(commandId, order);
-    finishBattle(engagement, result, player);
+    rememberOrder(players_[index], commandId, order);
+    finishBattle(engagement, result, now, player);
     engagements_.erase(found);
     return Result::ok;
+}
+
+SavedOrder World::savedOrder(std::uint64_t seat, const std::string& id, const PlacedOrder& order) {
+    return {seat, id, order.target, order.troops, static_cast<int>(order.combatMode), order.reinforcement, order.retreat};
+}
+
+void World::rememberOrder(Player& player, const std::string& id, const PlacedOrder& order) {
+    player.orders->emplace(id, order);
+    newOrder_ = savedOrder(player.seat, id, order);
+}
+
+void World::setTileState(Tile& tile, int owner, std::uint32_t garrison) {
+    if (tile.owner == owner && tile.garrison == garrison) return;
+    tile.owner = owner;
+    tile.garrison = garrison;
+    changedTiles_.insert(tile.id);
+    tileRevision_ = nextRevision_;
+}
+
+std::optional<SavedOrder> World::takeOrder() { return std::exchange(newOrder_, std::nullopt); }
+
+std::array<std::uint64_t, 2> World::seats() const { return {players_[0].seat, players_[1].seat}; }
+
+std::uint32_t World::reservesAt(const Player& player, Clock::time_point now) {
+    if (player.reserves >= battle::maximumTroops || now <= player.lastReinforcement) return player.reserves;
+    const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - player.lastReinforcement).count();
+    const auto added = std::min<std::int64_t>(battle::maximumTroops - player.reserves, elapsed * reinforcementsPerSecond);
+    return player.reserves + static_cast<std::uint32_t>(added);
+}
+
+void World::settleReserves(Player& player, Clock::time_point now) {
+    if (player.reserves >= battle::maximumTroops || now <= player.lastReinforcement) return;
+    player.reserves = reservesAt(player, now);
+    player.lastReinforcement += std::chrono::duration_cast<std::chrono::seconds>(now - player.lastReinforcement);
+}
+
+void World::returnTroops(Player& player, std::uint32_t troops, Clock::time_point now) {
+    settleReserves(player, now);
+    player.reserves += troops;
+}
+
+bool World::recordReplenishmentSince(Clock::time_point saved, Clock::time_point now) {
+    const auto changed = std::ranges::any_of(players_, [saved, now](const Player& player) {
+        return !player.account.empty() && reservesAt(player, saved) != reservesAt(player, now);
+    });
+    if (changed) ++nextRevision_;
+    return changed;
 }
 
 void World::expireSeats(Clock::time_point now) {
@@ -285,8 +373,7 @@ void World::expireSeats(Clock::time_point now) {
         player = Player{};
         for (auto& tile : tiles_) {
             if (tile.owner == index + 1) {
-                tile.owner = 0;
-                tile.garrison = 0;
+                setTileState(tile, 0, 0);
             }
         }
         recycled = true;
@@ -302,20 +389,7 @@ void World::advance(Clock::time_point now) {
     std::array<int, 2> arrivals{};
     std::size_t arrivalCount = 0;
     for (int index = 0; index < static_cast<int>(players_.size()); ++index) {
-        auto& player = players_[index];
-        if (player.account.empty()) continue;
-        const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - player.lastReinforcement);
-        if (elapsed.count() > 0) {
-            // 即使储备已满也消耗经过的补兵周期，避免出征后补发超额期间的兵力。
-            player.lastReinforcement += elapsed;
-            if (player.reserves < battle::maximumTroops) {
-                const auto added = std::min<std::int64_t>(battle::maximumTroops - player.reserves,
-                                                          elapsed.count() * reinforcementsPerSecond);
-                player.reserves += static_cast<std::uint32_t>(added);
-                player.reserveRevision = nextRevision_++;
-            }
-        }
-        if (const auto& march = player.marching; march && now >= march->arrives) {
+        if (const auto& march = players_[index].marching; march && now >= march->arrives) {
             arrivals[arrivalCount++] = index;
         }
     }
@@ -336,9 +410,10 @@ void World::advance(Clock::time_point now) {
             // 持续交战中的援军到达即计入战场，普通回合制则在下一回合并入。
             const auto found = engagements_.find(active->reinforcement);
             if (found == engagements_.end() || !found->second.acceptsReinforcement()) {
-                player.reserves += active->troops;
+                returnTroops(player, active->troops, now);
             } else {
                 auto& engagement = found->second;
+                changedBattles_.insert(found->first);
                 const bool attacking = engagement.task.attacker == index + 1;
                 auto& waiting = attacking ? engagement.attackerWaiting : engagement.defenderWaiting;
                 waiting += active->troops;
@@ -351,8 +426,7 @@ void World::advance(Clock::time_point now) {
             revision_ = nextRevision_++;
         } else if (target.owner == 0) {
             // 先抵达的部队占领中立地，后到的部队读取更新后的归属和驻军。
-            target.owner = index + 1;
-            target.garrison = active->troops;
+            setTileState(target, index + 1, active->troops);
             active.reset();
             revision_ = nextRevision_++;
         } else {
@@ -368,6 +442,7 @@ void World::advance(Clock::time_point now) {
                 {rule, active->troops, target.garrison, seed}, 1}, continuous ? 0 : rounds ? battleRounds : 1,
                 active->arrives + (continuous ? combatInterval : rounds ? roundDuration : std::chrono::seconds(0)),
                 seed, active->troops, target.garrison});
+            changedBattles_.insert(id);
             active.reset();
             revision_ = nextRevision_++;
         }
@@ -377,9 +452,22 @@ void World::advance(Clock::time_point now) {
 void World::tick() { step(Clock::now()); }
 
 void World::step(Clock::time_point now) {
-    expireSeats(now);
-    // 同一次推进先按到达顺序接收行军，再结算到期的本地交锋。
-    advance(now);
+    // 写入等待或调度延迟可能同时留下多个到期事件，按原截止时间补推进。
+    for (;;) {
+        auto next = now;
+        for (const auto& player : players_) {
+            if (player.marching) next = std::min(next, player.marching->arrives);
+        }
+        for (const auto& [_, engagement] : engagements_) next = std::min(next, engagement.roundEnds);
+        expireSeats(next);
+        // 同一时刻先接收行军，再结算交锋，否则晚到的援军可能参与先前已经到期的战损。
+        advance(next);
+        settleDueBattles(next);
+        if (next == now) return;
+    }
+}
+
+void World::settleDueBattles(Clock::time_point now) {
     for (auto cursor = engagements_.begin(); cursor != engagements_.end();) {
         const auto current = cursor++;
         auto& engagement = current->second;
@@ -403,15 +491,16 @@ void World::applyBattleResult(Engagements::iterator current, const battle::Resul
         result.attackerSurvivors > task.request.attackerTroops || result.defenderSurvivors > task.request.defenderTroops ||
         (!engagement.continuous() && !finalRound && (result.captured || result.attackerSurvivors == 0)) ||
         (result.captured ? (result.attackerSurvivors == 0 || result.defenderSurvivors != 0) : result.defenderSurvivors == 0)) {
-        return;
+        throw std::logic_error("battle result does not match the world snapshot");
     }
     if (finalRound || result.attackerSurvivors == 0 || result.defenderSurvivors == 0) {
-        finishBattle(engagement, result);
+        finishBattle(engagement, result, now);
         engagements_.erase(current);
         expireSeats(now);
         return;
     }
     ++task.round;
+    changedBattles_.insert(task.id);
     const auto rule = engagement.continuous() ? battle::continuousRule :
         task.round == engagement.rounds ? battle::decisiveRule : battle::exchangeRule;
     task.request = {rule, result.attackerSurvivors + engagement.attackerWaiting,
@@ -422,22 +511,22 @@ void World::applyBattleResult(Engagements::iterator current, const battle::Resul
     revision_ = nextRevision_++;
 }
 
-void World::finishBattle(const Engagement& engagement, const battle::Result& result, int retreatedPlayer) {
+void World::finishBattle(const Engagement& engagement, const battle::Result& result, Clock::time_point now, int retreatedPlayer) {
     const auto& task = engagement.task;
     auto& player = players_[task.attacker - 1];
     auto& target = tiles_[task.target - 1];
+    changedBattles_.insert(task.id);
     if (result.captured) {
-        target.owner = task.attacker;
-        target.garrison = result.attackerSurvivors;
-        if (retreatedPlayer == task.defender) players_[task.defender - 1].reserves += result.defenderSurvivors;
+        setTileState(target, task.attacker, result.attackerSurvivors);
+        if (retreatedPlayer == task.defender) returnTroops(players_[task.defender - 1], result.defenderSurvivors, now);
     } else {
-        target.garrison = result.defenderSurvivors;
-        player.reserves += result.attackerSurvivors;
+        setTileState(target, target.owner, result.defenderSurvivors);
+        returnTroops(player, result.attackerSurvivors, now);
     }
     for (auto& participant : players_) {
         // 结算时仍在路上的援军整队退回，不能撞进地块上的下一场战斗。
         if (participant.marching && participant.marching->reinforcement == task.id) {
-            participant.reserves += participant.marching->troops;
+            returnTroops(participant, participant.marching->troops, now);
             participant.marching.reset();
         }
     }
@@ -459,12 +548,19 @@ void World::finishBattle(const Engagement& engagement, const battle::Result& res
     revision_ = nextRevision_++;
 }
 
-Json World::snapshot(int index, std::uint64_t revision, Clock::time_point now, std::int64_t unixMs) const {
-    Json tiles = Json::array(), marches = Json::array(), battles = Json::array();
-    for (const auto& tile : tiles_) {
-        tiles.push_back({{"id", tile.id}, {"q", tile.q}, {"r", tile.r}, {"owner", tile.owner},
-                         {"home", tile.home}, {"garrison", tile.garrison}});
+Json World::snapshot(int index, std::uint64_t revision, std::uint32_t reserves, Clock::time_point now, std::int64_t unixMs,
+                     bool includeTiles) const {
+    Json data{{"instance", instance_}, {"revision", revision}, {"your_player", index + 1},
+              {"available_troops", reserves}, {"troop_capacity", battle::maximumTroops}};
+    if (includeTiles) {
+        auto& tiles = data["tiles"] = Json::array();
+        for (const auto& tile : tiles_) {
+            tiles.push_back({{"id", tile.id}, {"q", tile.q}, {"r", tile.r}, {"owner", tile.owner},
+                             {"home", tile.home}, {"garrison", tile.garrison}});
+        }
     }
+    auto& marches = data["marches"] = Json::array();
+    auto& battles = data["battles"] = Json::array();
     for (int i = 0; i < static_cast<int>(players_.size()); ++i) {
         if (const auto& active = players_[i].marching) {
             marches.push_back({{"player", i + 1}, {"source_tile_id", active->source},
@@ -485,9 +581,7 @@ Json World::snapshot(int index, std::uint64_t revision, Clock::time_point now, s
                            {"defender_waiting", engagement.continuous() ? 0 : engagement.defenderWaiting},
                            {"continuous", engagement.continuous()}});
     }
-    return Json{{"instance", instance_}, {"revision", revision}, {"your_player", index + 1},
-                {"tiles", std::move(tiles)}, {"marches", std::move(marches)}, {"battles", std::move(battles)},
-                {"available_troops", players_[index].reserves}, {"troop_capacity", battle::maximumTroops}};
+    return data;
 }
 
 }  // slg 命名空间

@@ -10,8 +10,34 @@ import (
 //go:embed login-server/slg_accounts/0001.sql
 var createAccounts string
 
-// Migrate 执行登录账号表的建表 SQL，可对已有数据库重复执行。
+//go:embed game-server/slg_world_snapshots/0001.sql
+var createWorldSnapshots string
+
+//go:embed game-server/slg_world_orders/0001.sql
+var createWorldOrders string
+
+//go:embed game-server/slg_world_streams/0001.sql
+var createWorldStreams string
+
+//go:embed game-server/slg_world_events/0001.sql
+var createWorldEvents string
+
+//go:embed game-server/slg_world_leases/0001.sql
+var createWorldLeases string
+
+//go:embed game-server/slg_world_previous_snapshots/0001.sql
+var createPreviousWorldSnapshots string
+
+//go:embed game-server/slg_world_snapshot_checksums/0001.sql
+var createWorldSnapshotChecksums string
+
+// Migrate 建立账号表和世界存储表，可对已有数据库重复执行。
 func Migrate(ctx context.Context, db *sql.DB) error {
-	_, err := db.ExecContext(ctx, createAccounts)
-	return err
+	for _, schema := range []string{createAccounts, createWorldSnapshots, createWorldOrders, createWorldStreams,
+		createWorldEvents, createWorldLeases, createPreviousWorldSnapshots, createWorldSnapshotChecksums} {
+		if _, err := db.ExecContext(ctx, schema); err != nil {
+			return err
+		}
+	}
+	return nil
 }

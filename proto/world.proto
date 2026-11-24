@@ -50,6 +50,8 @@ message WorldRequest {
   optional uint64 known_battle_id = 4;
   // 按战果提交顺序读取战报，包括晚开战却先结算的交锋。
   optional uint64 known_report_id = 5;
+  // 支持分开同步地块的客户端始终携带，首次进入或清除地块缓存时为 0。
+  optional uint64 known_tile_revision = 6;
 }
 
 // 网关从已认证会话填入账号，再把请求转发给游戏服。
@@ -121,6 +123,8 @@ message WorldSnapshot {
   uint32 troop_capacity = 7;
   WorldBattleReport last_battle = 8;
   repeated WorldBattle battles = 9;
+  // 当客户端已持有此版本时，回包省略 tiles，沿用缓存的地块。
+  optional uint64 tile_revision = 10;
 }
 
 message WorldReply {
