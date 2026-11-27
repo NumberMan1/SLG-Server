@@ -60,6 +60,16 @@ std::uint64_t knownRevision(const Json& value) {
 
 }  // 匿名命名空间
 
+battle::Terrain World::Tile::terrain() const {
+    // 从轴坐标推导地貌，扩图追加外环时已有据点的地貌保持一致。
+    if (home != 0) return battle::Terrain::plains;
+    const int east = 2 * q + r;
+    if (std::abs(east) <= 1) return battle::Terrain::ford;
+    if (east < 0 && r < 0) return battle::Terrain::highland;
+    if (east > 0 && r > 0) return battle::Terrain::woods;
+    return battle::Terrain::plains;
+}
+
 World::World(std::chrono::seconds seatIdleTimeout, int radius)
     : instance_(instanceId()), syncRevisionOffset_(syncRevisionOffset(instance_)), seatIdleTimeout_(seatIdleTimeout), radius_(radius) {
     if (radius < 2 || radius > 7) throw std::invalid_argument("SLG_WORLD_RADIUS must be between 2 and 7");
@@ -220,16 +230,21 @@ World::Result World::placeOrder(int index, const Json& order, Clock::time_point 
     const auto reinforcement = battleId == order.end() ? 0 : knownRevision(*battleId);
     const auto retreatId = order.find("retreat_battle_id");
     const auto withdrawing = retreatId == order.end() ? 0 : knownRevision(*retreatId);
+    const auto typeField = order.find("troop_type");
+    if (typeField != order.end() && !typeField->is_number_unsigned()) return rejected;
+    const auto kind = typeField == order.end() ? 0 : typeField->get<std::uint64_t>();
     const auto count = withdrawing != 0 ? 0 : troops == order.end() ? defaultMarchTroops : troops->get<std::uint64_t>();
     if (id.empty() || id.size() > 64 || targetId == 0 || targetId > tiles_.size() || count > battle::maximumTroops ||
         (roundBattle && continuousBattle) || (battleId != order.end() && reinforcement == 0) ||
         (retreatId != order.end() && withdrawing == 0) || (count == 0 && withdrawing == 0) ||
         ((reinforcement || withdrawing) && (roundBattle || continuousBattle)) ||
-        (withdrawing != 0 && (reinforcement != 0 || troops != order.end()))) {
+        (withdrawing != 0 && (reinforcement != 0 || troops != order.end())) ||
+        kind > static_cast<std::uint32_t>(battle::TroopType::cavalry) || (kind != 0 && !continuousBattle)) {
         return rejected;
     }
     const auto mode = continuousBattle ? CombatMode::continuous : roundBattle ? CombatMode::rounds : CombatMode::instant;
-    const PlacedOrder placed{static_cast<int>(targetId), static_cast<std::uint32_t>(count), mode, reinforcement, withdrawing};
+    const PlacedOrder placed{static_cast<int>(targetId), static_cast<std::uint32_t>(count), mode, reinforcement, withdrawing,
+                             static_cast<battle::TroopType>(kind)};
 
     auto& player = players_[index];
     // 其他席位回收会更换世界实例。原席位可以确认相同的已提交指令，旧实例不能执行新指令。
@@ -242,6 +257,7 @@ World::Result World::placeOrder(int index, const Json& order, Clock::time_point 
         return Result::already_marching;
     }
     const auto& target = tiles_[targetId - 1];
+    auto marchingType = placed.troopType;
     if (reinforcement != 0) {
         const auto found = engagements_.find(reinforcement);
         if (found == engagements_.end()) return Result::reinforcement_closed;
@@ -253,6 +269,7 @@ World::Result World::placeOrder(int index, const Json& order, Clock::time_point 
         const auto occupied = attacker ? task.request.attackerTroops + engagement.attackerWaiting :
                                          task.request.defenderTroops + engagement.defenderWaiting;
         if (occupied + count > battle::maximumBattleTroops) return Result::battle_capacity;
+        marchingType = attacker ? task.request.attackerType : task.request.defenderType;
     } else {
         if (target.owner == index + 1 || target.home != 0) return Result::invalid_target;
         for (const auto& [_, engagement] : engagements_) {
@@ -276,7 +293,8 @@ World::Result World::placeOrder(int index, const Json& order, Clock::time_point 
             player.reserves -= placed.troops;
             if (!replenishing && player.reserves < battle::maximumTroops) player.lastReinforcement = now;
             revision_ = nextRevision_++;
-            player.marching = March{source.id, target.id, placed.troops, now + std::chrono::seconds(3), revision_, mode, reinforcement};
+            player.marching = March{source.id, target.id, placed.troops, now + std::chrono::seconds(3), revision_, mode,
+                                    reinforcement, marchingType};
             return Result::ok;
         }
     }
@@ -301,7 +319,8 @@ World::Result World::retreat(int index, const std::string& commandId, const Plac
 }
 
 SavedOrder World::savedOrder(std::uint64_t seat, const std::string& id, const PlacedOrder& order) {
-    return {seat, id, order.target, order.troops, static_cast<int>(order.combatMode), order.reinforcement, order.retreat};
+    return {seat, id, order.target, order.troops, static_cast<int>(order.combatMode), order.reinforcement, order.retreat,
+            static_cast<std::uint32_t>(order.troopType)};
 }
 
 void World::rememberOrder(Player& player, const std::string& id, const PlacedOrder& order) {
@@ -309,10 +328,12 @@ void World::rememberOrder(Player& player, const std::string& id, const PlacedOrd
     newOrder_ = savedOrder(player.seat, id, order);
 }
 
-void World::setTileState(Tile& tile, int owner, std::uint32_t garrison) {
-    if (tile.owner == owner && tile.garrison == garrison) return;
+void World::setTileState(Tile& tile, int owner, std::uint32_t garrison, battle::TroopType type) {
+    if (garrison == 0) type = battle::TroopType::militia;
+    if (tile.owner == owner && tile.garrison == garrison && tile.garrisonType == type) return;
     tile.owner = owner;
     tile.garrison = garrison;
+    tile.garrisonType = type;
     changedTiles_.insert(tile.id);
     tileRevision_ = nextRevision_;
 }
@@ -426,7 +447,7 @@ void World::advance(Clock::time_point now) {
             revision_ = nextRevision_++;
         } else if (target.owner == 0) {
             // 先抵达的部队占领中立地，后到的部队读取更新后的归属和驻军。
-            setTileState(target, index + 1, active->troops);
+            setTileState(target, index + 1, active->troops, active->troopType);
             active.reset();
             revision_ = nextRevision_++;
         } else {
@@ -435,11 +456,13 @@ void World::advance(Clock::time_point now) {
             const auto seed = (static_cast<std::uint64_t>(random()) << 32) | random();
             const bool continuous = active->combatMode == CombatMode::continuous;
             const bool rounds = active->combatMode == CombatMode::rounds;
-            const auto rule = continuous ? battle::continuousRule : rounds ? battle::exchangeRule :
+            const bool typed = active->troopType != battle::TroopType::militia || target.garrisonType != battle::TroopType::militia;
+            const auto rule = continuous ? (typed ? battle::formationRule : battle::continuousRule) : rounds ? battle::exchangeRule :
                 target.garrison > battle::maximumTroops ? battle::decisiveRule : battle::currentRule;
             const auto id = nextBattleId_++;
             engagements_.emplace(id, Engagement{{id, target.id, index + 1, target.owner,
-                {rule, active->troops, target.garrison, seed}, 1}, continuous ? 0 : rounds ? battleRounds : 1,
+                {rule, active->troops, target.garrison, seed, active->troopType, target.garrisonType, target.terrain()}, 1},
+                continuous ? 0 : rounds ? battleRounds : 1,
                 active->arrives + (continuous ? combatInterval : rounds ? roundDuration : std::chrono::seconds(0)),
                 seed, active->troops, target.garrison});
             changedBattles_.insert(id);
@@ -501,10 +524,12 @@ void World::applyBattleResult(Engagements::iterator current, const battle::Resul
     }
     ++task.round;
     changedBattles_.insert(task.id);
-    const auto rule = engagement.continuous() ? battle::continuousRule :
-        task.round == engagement.rounds ? battle::decisiveRule : battle::exchangeRule;
-    task.request = {rule, result.attackerSurvivors + engagement.attackerWaiting,
-                    result.defenderSurvivors + engagement.defenderWaiting, engagement.seed ^ (task.round - 1)};
+    engagement.lastAttackerLosses = task.request.attackerTroops - result.attackerSurvivors;
+    engagement.lastDefenderLosses = task.request.defenderTroops - result.defenderSurvivors;
+    if (!engagement.continuous()) task.request.rule = task.round == engagement.rounds ? battle::decisiveRule : battle::exchangeRule;
+    task.request.attackerTroops = result.attackerSurvivors + engagement.attackerWaiting;
+    task.request.defenderTroops = result.defenderSurvivors + engagement.defenderWaiting;
+    task.request.seed = engagement.seed ^ (task.round - 1);
     engagement.attackerReinforcements += std::exchange(engagement.attackerWaiting, 0);
     engagement.defenderReinforcements += std::exchange(engagement.defenderWaiting, 0);
     engagement.roundEnds = now + (engagement.continuous() ? combatInterval : roundDuration);
@@ -517,10 +542,10 @@ void World::finishBattle(const Engagement& engagement, const battle::Result& res
     auto& target = tiles_[task.target - 1];
     changedBattles_.insert(task.id);
     if (result.captured) {
-        setTileState(target, task.attacker, result.attackerSurvivors);
+        setTileState(target, task.attacker, result.attackerSurvivors, task.request.attackerType);
         if (retreatedPlayer == task.defender) returnTroops(players_[task.defender - 1], result.defenderSurvivors, now);
     } else {
-        setTileState(target, target.owner, result.defenderSurvivors);
+        setTileState(target, target.owner, result.defenderSurvivors, task.request.defenderType);
         returnTroops(player, result.attackerSurvivors, now);
     }
     for (auto& participant : players_) {
@@ -541,6 +566,10 @@ void World::finishBattle(const Engagement& engagement, const battle::Result& res
                        {"defender_reinforcements", engagement.defenderReinforcements}});
     }
     if (retreatedPlayer != 0) report["retreated_player"] = retreatedPlayer;
+    report.update({{"attacker_type", static_cast<std::uint32_t>(task.request.attackerType)},
+                   {"defender_type", static_cast<std::uint32_t>(task.request.defenderType)},
+                   {"terrain", static_cast<std::uint32_t>(task.request.terrain)}});
+    if (engagement.continuous()) report["exchanges"] = task.round - (retreatedPlayer != 0 ? 1 : 0);
     // 结算顺序独立于开战顺序，正在交战的场次不会阻塞新战报。
     report["report_id"] = nextReportId_++;
     battleReports_.push_back(std::move(report));
@@ -556,7 +585,9 @@ Json World::snapshot(int index, std::uint64_t revision, std::uint32_t reserves, 
         auto& tiles = data["tiles"] = Json::array();
         for (const auto& tile : tiles_) {
             tiles.push_back({{"id", tile.id}, {"q", tile.q}, {"r", tile.r}, {"owner", tile.owner},
-                             {"home", tile.home}, {"garrison", tile.garrison}});
+                             {"home", tile.home}, {"garrison", tile.garrison},
+                             {"garrison_type", static_cast<std::uint32_t>(tile.garrisonType)},
+                             {"terrain", static_cast<std::uint32_t>(tile.terrain())}});
         }
     }
     auto& marches = data["marches"] = Json::array();
@@ -565,7 +596,8 @@ Json World::snapshot(int index, std::uint64_t revision, std::uint32_t reserves, 
         if (const auto& active = players_[i].marching) {
             marches.push_back({{"player", i + 1}, {"source_tile_id", active->source},
                                {"target_tile_id", active->target}, {"arrives_at_ms", projectedTime(active->arrives, now, unixMs)},
-                               {"troops", active->troops}, {"hostile", active->reinforcement == 0 && tiles_[active->target - 1].owner != 0}});
+                               {"troops", active->troops}, {"troop_type", static_cast<std::uint32_t>(active->troopType)},
+                               {"hostile", active->reinforcement == 0 && tiles_[active->target - 1].owner != 0}});
             if (active->reinforcement != 0) marches.back()["reinforce_battle_id"] = active->reinforcement;
         }
     }
@@ -579,7 +611,12 @@ Json World::snapshot(int index, std::uint64_t revision, std::uint32_t reserves, 
                            {"defender_troops", task.request.defenderTroops + (engagement.continuous() ? engagement.defenderWaiting : 0)},
                            {"attacker_waiting", engagement.continuous() ? 0 : engagement.attackerWaiting},
                            {"defender_waiting", engagement.continuous() ? 0 : engagement.defenderWaiting},
-                           {"continuous", engagement.continuous()}});
+                           {"continuous", engagement.continuous()}, {"rule_version", task.request.rule},
+                           {"attacker_type", static_cast<std::uint32_t>(task.request.attackerType)},
+                           {"defender_type", static_cast<std::uint32_t>(task.request.defenderType)},
+                           {"terrain", static_cast<std::uint32_t>(task.request.terrain)},
+                           {"last_attacker_losses", engagement.lastAttackerLosses},
+                           {"last_defender_losses", engagement.lastDefenderLosses}});
     }
     return data;
 }

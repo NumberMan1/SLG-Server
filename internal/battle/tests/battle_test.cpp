@@ -35,5 +35,25 @@ int main() {
         std::cerr << "continuous combat did not apply simultaneous losses\n";
         return 1;
     }
+    const auto baseline = resolve({formationRule, 100, 100, 123});
+    for (const auto type : {TroopType::spear, TroopType::bow, TroopType::cavalry}) {
+        const auto opponent = type == TroopType::spear ? TroopType::cavalry :
+            type == TroopType::bow ? TroopType::spear : TroopType::bow;
+        const auto adv = resolve({formationRule, 100, 100, 123, type, opponent});
+        const auto reversed = resolve({formationRule, 100, 100, 123, opponent, type});
+        if (!baseline || !adv || !reversed || adv->defenderSurvivors >= baseline->defenderSurvivors ||
+            reversed->attackerSurvivors >= baseline->attackerSurvivors) {
+            std::cerr << "each troop type should counter its intended opponent on either side\n";
+            return 1;
+        }
+    }
+    const auto ford = resolve({formationRule, 100, 100, 123, TroopType::militia, TroopType::militia, Terrain::ford});
+    const auto highland = resolve({formationRule, 100, 100, 123, TroopType::militia, TroopType::bow, Terrain::highland});
+    const auto woods = resolve({formationRule, 100, 100, 123, TroopType::cavalry, TroopType::militia, Terrain::woods});
+    if (!ford || !highland || !woods || ford->attackerSurvivors >= baseline->attackerSurvivors ||
+        highland->attackerSurvivors >= baseline->attackerSurvivors || woods->defenderSurvivors <= baseline->defenderSurvivors) {
+        std::cerr << "terrain should modify the intended formation matchup\n";
+        return 1;
+    }
     return 0;
 }

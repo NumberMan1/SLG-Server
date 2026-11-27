@@ -81,6 +81,8 @@ private:
         int home = 0;
         int owner = 0;
         std::uint32_t garrison = 0;
+        battle::TroopType garrisonType = battle::TroopType::militia;
+        battle::Terrain terrain() const;
     };
 
     struct March {
@@ -90,6 +92,7 @@ private:
         std::uint64_t dispatchRevision;
         CombatMode combatMode;
         std::uint64_t reinforcement;
+        battle::TroopType troopType = battle::TroopType::militia;
         bool operator==(const March&) const = default;
     };
 
@@ -99,6 +102,7 @@ private:
         CombatMode combatMode;
         std::uint64_t reinforcement;
         std::uint64_t retreat;
+        battle::TroopType troopType = battle::TroopType::militia;
 
         bool operator==(const PlacedOrder&) const = default;
     };
@@ -119,6 +123,7 @@ private:
         std::uint32_t initialAttacker, initialDefender;
         std::uint32_t attackerWaiting = 0, defenderWaiting = 0;
         std::uint32_t attackerReinforcements = 0, defenderReinforcements = 0;
+        std::uint32_t lastAttackerLosses = 0, lastDefenderLosses = 0;
 
         bool continuous() const { return rounds == 0; }
         bool acceptsReinforcement() const { return continuous() || task.round < rounds; }
@@ -144,7 +149,7 @@ private:
     static void settleReserves(Player& player, Clock::time_point now);
     static void returnTroops(Player& player, std::uint32_t troops, Clock::time_point now);
     void rememberOrder(Player& player, const std::string& id, const PlacedOrder& order);
-    void setTileState(Tile& tile, int owner, std::uint32_t garrison);
+    void setTileState(Tile& tile, int owner, std::uint32_t garrison, battle::TroopType type = battle::TroopType::militia);
     static SavedOrder savedOrder(std::uint64_t seat, const std::string& id, const PlacedOrder& order);
     void expireSeats(Clock::time_point now);
     void advance(Clock::time_point now);

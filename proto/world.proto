@@ -26,6 +26,20 @@ enum WorldResult {
   WORLD_RESULT_BATTLE_CLOSED = 11;
 }
 
+enum TroopType {
+  TROOP_TYPE_UNSPECIFIED = 0;
+  TROOP_TYPE_SPEAR = 1;
+  TROOP_TYPE_BOW = 2;
+  TROOP_TYPE_CAVALRY = 3;
+}
+
+enum BattlefieldTerrain {
+  BATTLEFIELD_TERRAIN_PLAINS = 0;
+  BATTLEFIELD_TERRAIN_HIGHLAND = 1;
+  BATTLEFIELD_TERRAIN_WOODS = 2;
+  BATTLEFIELD_TERRAIN_FORD = 3;
+}
+
 // 每名玩家的行军指令 ID 在同一世界内唯一，重试时沿用。
 message MarchOrder {
   string command_id = 1;
@@ -39,6 +53,8 @@ message MarchOrder {
   bool continuous_battle = 6;
   // 撤出指定战斗时省略出征兵力，指令仍使用相同的去重规则。
   uint64 retreat_battle_id = 7;
+  // 新出征可选军种。增援和撤出沿用所选战斗的编制。
+  TroopType troop_type = 8;
 }
 
 // 不携带行军指令时只读取世界状态。
@@ -67,6 +83,8 @@ message WorldTile {
   uint32 owner = 4;
   uint32 home = 5;
   uint32 garrison = 6;
+  TroopType garrison_type = 7;
+  BattlefieldTerrain terrain = 8;
 }
 
 message WorldMarch {
@@ -77,6 +95,7 @@ message WorldMarch {
   uint32 troops = 5;
   bool hostile = 6;
   uint64 reinforce_battle_id = 7;
+  TroopType troop_type = 8;
 }
 
 message WorldBattle {
@@ -92,6 +111,12 @@ message WorldBattle {
   uint32 attacker_waiting = 10;
   uint32 defender_waiting = 11;
   bool continuous = 12;
+  TroopType attacker_type = 13;
+  TroopType defender_type = 14;
+  BattlefieldTerrain terrain = 15;
+  uint32 last_attacker_losses = 16;
+  uint32 last_defender_losses = 17;
+  uint32 rule_version = 18;
 }
 
 message WorldBattleReport {
@@ -111,6 +136,10 @@ message WorldBattleReport {
   uint32 defender_reinforcements = 14;
   uint32 retreated_player = 15;
   uint64 report_id = 16;
+  TroopType attacker_type = 17;
+  TroopType defender_type = 18;
+  BattlefieldTerrain terrain = 19;
+  uint32 exchanges = 20;
 }
 
 message WorldSnapshot {

@@ -14,6 +14,7 @@ struct SavedOrder {
     std::uint32_t troops;
     int mode;
     std::uint64_t reinforcement, retreat;
+    std::uint32_t troopType = 0;
 };
 
 // 同一版本的事件、成功指令和席位回收由一个存储事务提交。

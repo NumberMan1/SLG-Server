@@ -240,11 +240,8 @@ if [ -n "${SLG_DEMO_PASSWORD:-}" ]; then
         --env SLG_ACCOUNT --env SLG_ACCOUNT_PASSWORD "$image" /slg/login-server create-account
 fi
 
-# 应用容器通过 Podman 网络 DNS 访问依赖和其他服务。
+# 先替换网关，使其能解析新版快照，再切换游戏服。
 set -- run --detach --replace --http-proxy=false --network "$network" --label "$owner_label"
-run_podman "$@" --name "$game_server" --restart=on-failure --env SLG_GAME_ADDR=0.0.0.0:8081 --env SLG_GAME_RPC_ADDR=0.0.0.0:8083 \
-    --env SLG_WORLD_IDLE_SECONDS --env SLG_WORLD_ID --env SLG_WORLD_RADIUS --env SLG_WORLD_CHECKPOINT_SECONDS --env SLG_GAME_MYSQL_DSN --env SLG_MYSQL_DSN \
-    "$image" /slg/game-server
 run_podman "$@" --name "$login_server" --env SLG_LOGIN_ADDR=0.0.0.0:8082 \
     --env "SLG_LOGIN_ADVERTISE_URL=http://$login_server:8082" \
     --env SLG_LOGIN_CONCURRENCY --env SLG_REGISTER_CONCURRENCY --env SLG_REGISTER_RATE_PER_SECOND \
@@ -261,6 +258,9 @@ run_podman "$@" --name "$gateway" \
     --env SLG_REDIS_USERNAME --env SLG_REDIS_PASSWORD --env SLG_REDIS_KEY_PREFIX \
     --env SLG_ETCD_ENDPOINTS --env "SLG_ETCD_PREFIX=$SLG_ETCD_PREFIX" --env SLG_ETCD_USERNAME --env SLG_ETCD_PASSWORD \
     "$image" /slg/gateway
+run_podman "$@" --name "$game_server" --restart=on-failure --env SLG_GAME_ADDR=0.0.0.0:8081 --env SLG_GAME_RPC_ADDR=0.0.0.0:8083 \
+    --env SLG_WORLD_IDLE_SECONDS --env SLG_WORLD_ID --env SLG_WORLD_RADIUS --env SLG_WORLD_CHECKPOINT_SECONDS --env SLG_GAME_MYSQL_DSN --env SLG_MYSQL_DSN \
+    "$image" /slg/game-server
 
 # 通过实际网关验证登录依赖、Redis 票据读写及 Orbit 玩法连接。
 url="http://127.0.0.1:$http_port"

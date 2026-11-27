@@ -157,7 +157,7 @@ func requestWorld(ctx context.Context, upstream *socket.Connector, command *pb.W
 		return nil, err
 	}
 	// 内网保留游戏服的 JSON 数据格式；Orbit 在独立读循环里按序号匹配回应。
-	body, err := (protojson.MarshalOptions{UseProtoNames: true}).Marshal(command)
+	body, err := (protojson.MarshalOptions{UseProtoNames: true, UseEnumNumbers: true}).Marshal(command)
 	if err != nil {
 		return nil, err
 	}

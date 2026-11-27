@@ -411,7 +411,7 @@ void WorldStore::loadEvents(Connection& connection, std::uint64_t after, std::ui
 
 void WorldStore::loadOrders(Connection& connection, World& world) const {
     const auto seats = world.seats();
-    auto* handle = connection.query("SELECT seat_revision,command_id,target_tile_id,troops,combat_mode,reinforcement,retreat "
+    auto* handle = connection.query("SELECT seat_revision,command_id,target_tile_id,troops,combat_mode,reinforcement,retreat,troop_type "
         "FROM slg_world_orders WHERE world_id=" + key_ + " AND seat_revision IN (" + std::to_string(seats[0]) + "," +
         std::to_string(seats[1]) + ")");
     std::unique_ptr<MYSQL_RES, decltype(&mysql_free_result)> result(mysql_use_result(handle), mysql_free_result);
@@ -420,7 +420,8 @@ void WorldStore::loadOrders(Connection& connection, World& world) const {
         const auto lengths = mysql_fetch_lengths(result.get());
         world.restoreOrder({column<std::uint64_t>(row[0], lengths[0]), std::string(row[1], lengths[1]),
             column<int>(row[2], lengths[2]), column<std::uint32_t>(row[3], lengths[3]), column<int>(row[4], lengths[4]),
-            column<std::uint64_t>(row[5], lengths[5]), column<std::uint64_t>(row[6], lengths[6])});
+            column<std::uint64_t>(row[5], lengths[5]), column<std::uint64_t>(row[6], lengths[6]),
+            column<std::uint32_t>(row[7], lengths[7])});
     }
     if (mysql_errno(handle) != 0) {
         result.reset();
@@ -431,13 +432,15 @@ void WorldStore::loadOrders(Connection& connection, World& world) const {
 void WorldStore::insertOrders(Connection& connection, const std::vector<SavedOrder>& orders) const {
     // 常规提交只追加一条成功指令。旧存档迁移时分批发送历史记录以限制报文大小。
     for (std::size_t i = 0; i < orders.size();) {
-        std::string sql = "INSERT INTO slg_world_orders (world_id,seat_revision,command_id,target_tile_id,troops,combat_mode,reinforcement,retreat) VALUES ";
+        std::string sql = "INSERT INTO slg_world_orders "
+            "(world_id,seat_revision,command_id,target_tile_id,troops,combat_mode,reinforcement,retreat,troop_type) VALUES ";
         const auto end = std::min(i + 128, orders.size());
         for (; i < end; ++i) {
             const auto& order = orders[i];
             sql += "(" + key_ + "," + std::to_string(order.seat) + "," + binaryLiteral(order.id) + "," +
                 std::to_string(order.target) + "," + std::to_string(order.troops) + "," + std::to_string(order.mode) + "," +
-                std::to_string(order.reinforcement) + "," + std::to_string(order.retreat) + (i + 1 < end ? ")," : ")");
+                std::to_string(order.reinforcement) + "," + std::to_string(order.retreat) + "," +
+                std::to_string(order.troopType) + (i + 1 < end ? ")," : ")");
         }
         connection.query(sql);
     }

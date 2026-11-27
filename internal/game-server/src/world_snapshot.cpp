@@ -13,6 +13,12 @@ constexpr unsigned snapshotFormat = 3;
 constexpr unsigned eventFormat = 1;
 constexpr std::int64_t timerRange = 86'400'000'000'000LL;
 
+battle::TroopType savedTroopType(const Json& entry, const char* field) {
+    const auto value = entry.value(field, 0u);
+    if (value > static_cast<unsigned>(battle::TroopType::cavalry)) throw std::runtime_error("invalid saved troop type");
+    return static_cast<battle::TroopType>(value);
+}
+
 }  // 匿名命名空间
 
 std::int64_t World::logicalTime(Clock::time_point time) const {
@@ -35,7 +41,8 @@ Json World::persistedPlayer(Player player, Clock::time_point at) const {
     if (const auto& march = player.marching) {
         entry["march"] = {{"source", march->source}, {"target", march->target}, {"troops", march->troops},
                           {"arrives_ns", logicalTime(march->arrives)}, {"sequence", march->dispatchRevision},
-                          {"mode", static_cast<int>(march->combatMode)}, {"reinforcement", march->reinforcement}};
+                          {"mode", static_cast<int>(march->combatMode)}, {"reinforcement", march->reinforcement},
+                          {"troop_type", static_cast<unsigned>(march->troopType)}};
     }
     return entry;
 }
@@ -49,7 +56,11 @@ Json World::persistedBattle(const Engagement& battle) const {
             {"seed", battle.seed}, {"initial_attacker", battle.initialAttacker},
             {"initial_defender", battle.initialDefender}, {"attacker_waiting", battle.attackerWaiting},
             {"defender_waiting", battle.defenderWaiting}, {"attacker_reinforcements", battle.attackerReinforcements},
-            {"defender_reinforcements", battle.defenderReinforcements}};
+            {"defender_reinforcements", battle.defenderReinforcements},
+            {"attacker_type", static_cast<unsigned>(task.request.attackerType)},
+            {"defender_type", static_cast<unsigned>(task.request.defenderType)},
+            {"terrain", static_cast<unsigned>(task.request.terrain)},
+            {"last_attacker_losses", battle.lastAttackerLosses}, {"last_defender_losses", battle.lastDefenderLosses}};
 }
 
 std::string World::save(Clock::time_point at) const {
@@ -57,7 +68,8 @@ std::string World::save(Clock::time_point at) const {
     data.update({{"format", snapshotFormat}, {"tiles", Json::array()}, {"players", Json::array()},
                  {"battles", Json::array()}, {"reports", battleReports_}});
     for (const auto& tile : tiles_) {
-        data["tiles"].push_back({{"id", tile.id}, {"q", tile.q}, {"r", tile.r}, {"owner", tile.owner}, {"garrison", tile.garrison}});
+        data["tiles"].push_back({{"id", tile.id}, {"q", tile.q}, {"r", tile.r}, {"owner", tile.owner}, {"garrison", tile.garrison},
+                                {"garrison_type", static_cast<unsigned>(tile.garrisonType)}});
     }
     for (const auto& player : players_) data["players"].push_back(persistedPlayer(player, at));
     for (const auto& [_, battle] : engagements_) data["battles"].push_back(persistedBattle(battle));
@@ -70,7 +82,8 @@ std::string World::event(const World& previous, Clock::time_point at, const std:
     for (const auto id : changedTiles_) {
         const auto index = id - 1;
         const auto& tile = tiles_[index];
-        data["tiles"].push_back({index, {{"owner", tile.owner}, {"garrison", tile.garrison}}});
+        data["tiles"].push_back({index, {{"owner", tile.owner}, {"garrison", tile.garrison},
+                                        {"garrison_type", static_cast<unsigned>(tile.garrisonType)}}});
     }
     for (std::size_t index = 0; index < players_.size(); ++index) {
         const auto& player = players_[index];
@@ -225,6 +238,7 @@ World::RestoreState World::restore(std::string_view payload, const std::function
         auto& tile = tiles_[index];
         tile.owner = tiles[index].at("owner").get<int>();
         tile.garrison = tiles[index].at("garrison").get<std::uint32_t>();
+        tile.garrisonType = savedTroopType(tiles[index], "garrison_type");
         if (tile.owner < 0 || tile.owner > static_cast<int>(players_.size())) throw std::runtime_error("invalid saved owner");
     }
     for (std::size_t index = 0; index < players_.size(); ++index) {
@@ -259,7 +273,8 @@ World::RestoreState World::restore(std::string_view payload, const std::function
         if (const auto march = entry.find("march"); march != entry.end()) {
             player.marching = March{tileID(march->at("source")), tileID(march->at("target")),
                 march->at("troops").get<std::uint32_t>(), timeAt(*march, "arrives"),
-                march->at("sequence").get<std::uint64_t>(), combatMode(*march), march->at("reinforcement").get<std::uint64_t>()};
+                march->at("sequence").get<std::uint64_t>(), combatMode(*march), march->at("reinforcement").get<std::uint64_t>(),
+                savedTroopType(*march, "troop_type")};
         }
     }
     engagements_.clear();
@@ -270,13 +285,19 @@ World::RestoreState World::restore(std::string_view payload, const std::function
             defender < 1 || defender > static_cast<int>(players_.size()) || attacker == defender) {
             throw std::runtime_error("invalid engagement in world snapshot");
         }
+        const auto target = tileID(battle.at("target"));
+        // 旧快照没有地貌字段，从战斗据点恢复场景，仍按快照记录的规则版本结算。
+        const auto terrain = static_cast<battle::Terrain>(battle.value("terrain", static_cast<unsigned>(tiles_[target - 1].terrain())));
+        if (terrain > battle::Terrain::ford) throw std::runtime_error("invalid saved battlefield terrain");
         const battle::Request request{battle.at("rule").get<std::uint32_t>(), battle.at("attacker_troops").get<std::uint32_t>(),
-            battle.at("defender_troops").get<std::uint32_t>(), battle.at("round_seed").get<std::uint64_t>()};
-        engagements_.emplace(id, Engagement{{id, tileID(battle.at("target")), attacker, defender, request, battle.at("round").get<unsigned>()},
+            battle.at("defender_troops").get<std::uint32_t>(), battle.at("round_seed").get<std::uint64_t>(),
+            savedTroopType(battle, "attacker_type"), savedTroopType(battle, "defender_type"), terrain};
+        engagements_.emplace(id, Engagement{{id, target, attacker, defender, request, battle.at("round").get<unsigned>()},
             battle.at("rounds").get<unsigned>(), timeAt(battle, "round_ends"), battle.at("seed").get<std::uint64_t>(),
             battle.at("initial_attacker").get<std::uint32_t>(), battle.at("initial_defender").get<std::uint32_t>(),
             battle.at("attacker_waiting").get<std::uint32_t>(), battle.at("defender_waiting").get<std::uint32_t>(),
-            battle.at("attacker_reinforcements").get<std::uint32_t>(), battle.at("defender_reinforcements").get<std::uint32_t>()});
+            battle.at("attacker_reinforcements").get<std::uint32_t>(), battle.at("defender_reinforcements").get<std::uint32_t>(),
+            battle.value("last_attacker_losses", 0u), battle.value("last_defender_losses", 0u)});
     }
     battleReports_ = data.at("reports").get<std::deque<Json>>();
     newOrder_.reset();
@@ -307,11 +328,12 @@ void World::restoreOrder(SavedOrder saved) {
     const auto player = std::ranges::find(players_, saved.seat, &Player::seat);
     if (saved.seat == 0 || player == players_.end() || saved.id.empty() || saved.id.size() > 64 ||
         saved.target < 1 || saved.target > static_cast<int>(tiles_.size()) || saved.troops > battle::maximumTroops ||
-        saved.mode < static_cast<int>(CombatMode::instant) || saved.mode > static_cast<int>(CombatMode::continuous)) {
+        saved.mode < static_cast<int>(CombatMode::instant) || saved.mode > static_cast<int>(CombatMode::continuous) ||
+        saved.troopType > static_cast<unsigned>(battle::TroopType::cavalry)) {
         throw std::runtime_error("invalid saved world command");
     }
     player->orders->emplace(std::move(saved.id), PlacedOrder{saved.target, saved.troops, static_cast<CombatMode>(saved.mode),
-        saved.reinforcement, saved.retreat});
+        saved.reinforcement, saved.retreat, static_cast<battle::TroopType>(saved.troopType)});
 }
 
 }  // slg 命名空间

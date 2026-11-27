@@ -14,6 +14,8 @@
 
 [`game-server/slg_world_orders/0001.sql`](game-server/slg_world_orders/0001.sql) 建立指令去重表。游戏服在追加变更事件的同一事务内写入成功指令，按地图和席位版本保留记录。已有快照在首次启动时作为事件流起点，旧存档内嵌的指令同时迁入去重表。
 
+[`game-server/slg_world_orders/0002.sql`](game-server/slg_world_orders/0002.sql) 为指令回执增加军种列。升级时先运行 `login-server migrate`，依次更新网关、游戏服和客户端。旧回执默认使用未指定军种，重试语义保持一致。
+
 ```sh
 go run ./cmd/login-server migrate
 SLG_ACCOUNT=demo SLG_ACCOUNT_PASSWORD="$SLG_DEMO_PASSWORD" go run ./cmd/login-server create-account

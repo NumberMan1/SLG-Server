@@ -1,0 +1,2 @@
+ALTER TABLE slg_world_orders
+    ADD COLUMN troop_type TINYINT UNSIGNED NOT NULL DEFAULT 0;

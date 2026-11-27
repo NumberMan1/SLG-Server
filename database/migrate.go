@@ -5,6 +5,9 @@ import (
 	"context"
 	"database/sql"
 	_ "embed"
+	"errors"
+
+	"github.com/go-sql-driver/mysql"
 )
 
 //go:embed login-server/slg_accounts/0001.sql
@@ -15,6 +18,9 @@ var createWorldSnapshots string
 
 //go:embed game-server/slg_world_orders/0001.sql
 var createWorldOrders string
+
+//go:embed game-server/slg_world_orders/0002.sql
+var addWorldOrderTroopType string
 
 //go:embed game-server/slg_world_streams/0001.sql
 var createWorldStreams string
@@ -39,5 +45,11 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 			return err
 		}
 	}
-	return nil
+	// MySQL 不提供 ADD COLUMN IF NOT EXISTS。重复启动或并行迁移时允许已存在的列。
+	_, err := db.ExecContext(ctx, addWorldOrderTroopType)
+	var mysqlErr *mysql.MySQLError
+	if errors.As(err, &mysqlErr) && mysqlErr.Number == 1060 {
+		return nil
+	}
+	return err
 }

@@ -561,15 +561,29 @@ func TestContinuousCombatReinforcementsAndRetreat(t *testing.T) {
 	waitFor(func(snapshot *pb.WorldSnapshot) bool {
 		return tileAt(snapshot, -1, 0).GetOwner() == 1 && tileAt(snapshot, 1, 0).GetOwner() == 2
 	})
-	send(east, makeOrder(east, "defend-center", 0, 60))
+	defend := makeOrder(east, "defend-center", 0, 60)
+	defend.Order.ContinuousBattle = true
+	defend.Order.TroopType = pb.TroopType_TROOP_TYPE_BOW
+	send(east, defend)
 	waitFor(func(snapshot *pb.WorldSnapshot) bool { return tileAt(snapshot, 0, 0).GetOwner() == 2 })
 	attack := makeOrder(west, "attack-center", 0, 60)
 	attack.Order.ContinuousBattle = true
+	attack.Order.TroopType = pb.TroopType_TROOP_TYPE_CAVALRY
 	send(west, attack)
+	changedType := proto.CloneOf(attack)
+	changedType.Order.TroopType = pb.TroopType_TROOP_TYPE_SPEAR
+	if got := world(west, changedType).GetResult(); got != pb.WorldResult_WORLD_RESULT_INVALID_ORDER {
+		t.Fatalf("same command with different troop type was accepted: %v", got)
+	}
 	cached := world(west, &pb.WorldRequest{KnownTileRevision: proto.Uint64(0), KnownReportId: proto.Uint64(0)}).GetSnapshot()
 	started := live(waitFor(func(snapshot *pb.WorldSnapshot) bool { return live(snapshot).GetRound() >= 2 }))
 	if !started.GetContinuous() || started.GetRounds() != 0 || started.GetAttackerTroops() >= 60 || started.GetDefenderTroops() >= 60 {
 		t.Fatalf("the first exchange should apply local losses without settling the battle: %v", started)
+	}
+	if started.GetRuleVersion() != 5 || started.GetAttackerType() != pb.TroopType_TROOP_TYPE_CAVALRY ||
+		started.GetDefenderType() != pb.TroopType_TROOP_TYPE_BOW || started.GetTerrain() != pb.BattlefieldTerrain_BATTLEFIELD_TERRAIN_FORD ||
+		started.GetLastAttackerLosses() == 0 || started.GetLastDefenderLosses() == 0 {
+		t.Fatalf("the live battle did not expose formations, terrain and last exchange losses: %v", started)
 	}
 	combatSync := knownWorld(cached)
 	combatSync.KnownTileRevision = cached.TileRevision
@@ -583,6 +597,10 @@ func TestContinuousCombatReinforcementsAndRetreat(t *testing.T) {
 	wests.Order.ReinforceBattleId, easts.Order.ReinforceBattleId = started.GetBattleId(), started.GetBattleId()
 	send(west, wests)
 	send(east, easts)
+	if marches := read(west).GetMarches(); len(marches) != 2 ||
+		marches[0].GetTroopType() != started.GetAttackerType() || marches[1].GetTroopType() != started.GetDefenderType() {
+		t.Fatalf("reinforcements should inherit each side's formation: %v", marches)
+	}
 	joined := live(waitFor(func(snapshot *pb.WorldSnapshot) bool { return len(snapshot.GetMarches()) == 0 }))
 	if joined.GetRound() <= started.GetRound() || joined.GetAttackerTroops() <= started.GetAttackerTroops() ||
 		joined.GetDefenderTroops() <= started.GetDefenderTroops() || joined.GetAttackerWaiting() != 0 || joined.GetDefenderWaiting() != 0 {
@@ -630,6 +648,8 @@ func TestContinuousCombatReinforcementsAndRetreat(t *testing.T) {
 		report.GetDefenderSurvivors() == 0 || report.GetAttackerReinforcements() != 40 ||
 		report.GetDefenderReinforcements() != 40 || report.GetReportId() <= firstCursor || tileAt(settled, 0, 0).GetOwner() != 1 ||
 		tileAt(settled, 0, 0).GetGarrison() != report.GetAttackerSurvivors() || len(settled.GetMarches()) != 0 ||
+		tileAt(settled, 0, 0).GetGarrisonType() != started.GetAttackerType() || report.GetAttackerType() != started.GetAttackerType() ||
+		report.GetDefenderType() != started.GetDefenderType() || report.GetTerrain() != started.GetTerrain() || report.GetExchanges() == 0 ||
 		settled.GetAvailableTroops() < debited+20 || !proto.Equal(report, remoteReports[0]) {
 		t.Fatalf("defender retreat should end the battle and refund in-transit support: %v", settled)
 	}
@@ -656,7 +676,7 @@ func directWorld(t *testing.T, address string) func(string, *pb.WorldRequest) *p
 		if request == nil {
 			request = &pb.WorldRequest{}
 		}
-		data, err := (protojson.MarshalOptions{UseProtoNames: true}).Marshal(&pb.WorldCommand{Account: account, Request: request})
+		data, err := (protojson.MarshalOptions{UseProtoNames: true, UseEnumNumbers: true}).Marshal(&pb.WorldCommand{Account: account, Request: request})
 		if err != nil {
 			t.Fatal(err)
 		}

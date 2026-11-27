@@ -108,6 +108,8 @@ func TestWorldRecoversCombatAndDeduplicatesCommandsWithMySQL(t *testing.T) {
 		return &pb.WorldRequest{KnownInstance: instance, Order: &pb.MarchOrder{CommandId: id, TargetTileId: target, Troops: troops}}
 	}
 	westBorder := request("west-border", tileAt(westHome, -1, 0).GetId(), 20)
+	westBorder.Order.ContinuousBattle = true
+	westBorder.Order.TroopType = pb.TroopType_TROOP_TYPE_SPEAR
 	// 锁住事件流的序号行模拟慢写。局内读取须保持可用，回执和行军须等到提交。
 	tx, err := db.BeginTx(t.Context(), nil)
 	if err != nil {
@@ -123,7 +125,7 @@ func TestWorldRecoversCombatAndDeduplicatesCommandsWithMySQL(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = parallel.Close() })
-	body, err := (protojson.MarshalOptions{UseProtoNames: true}).Marshal(&pb.WorldCommand{Account: west, Request: westBorder})
+	body, err := (protojson.MarshalOptions{UseProtoNames: true, UseEnumNumbers: true}).Marshal(&pb.WorldCommand{Account: west, Request: westBorder})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,10 +187,14 @@ func TestWorldRecoversCombatAndDeduplicatesCommandsWithMySQL(t *testing.T) {
 		return tileAt(view, -1, 0).GetOwner() == 1 && tileAt(view, 1, 0).GetOwner() == 2
 	})
 	center := tileAt(ready, 0, 0).GetId()
-	send(west, request("hold-center", center, 50))
+	hold := request("hold-center", center, 50)
+	hold.Order.ContinuousBattle = true
+	hold.Order.TroopType = pb.TroopType_TROOP_TYPE_BOW
+	send(west, hold)
 	waitFor(func(view *pb.WorldSnapshot) bool { return tileAt(view, 0, 0).GetOwner() == 1 })
 	attack := request("attack-center", center, 50)
 	attack.Order.ContinuousBattle = true
+	attack.Order.TroopType = pb.TroopType_TROOP_TYPE_CAVALRY
 	send(east, attack)
 	live := waitFor(func(view *pb.WorldSnapshot) bool { return len(view.GetBattles()) == 1 })
 	battleID := live.GetBattles()[0].GetBattleId()
@@ -205,6 +211,23 @@ func TestWorldRecoversCombatAndDeduplicatesCommandsWithMySQL(t *testing.T) {
 	if restored.GetInstance() != instance || len(restored.GetMarches()) != 2 ||
 		len(restored.GetBattles()) != 1 || restored.GetBattles()[0].GetBattleId() != battleID {
 		t.Fatalf("world did not restore the active battle and both marches: %v", restored)
+	}
+	match := restored.GetBattles()[0]
+	marches := restored.GetMarches()
+	if match.GetRuleVersion() != 5 || match.GetAttackerType() != attack.GetOrder().GetTroopType() ||
+		match.GetDefenderType() != hold.GetOrder().GetTroopType() ||
+		match.GetTerrain() != pb.BattlefieldTerrain_BATTLEFIELD_TERRAIN_FORD ||
+		marches[0].GetTroopType() != match.GetDefenderType() || marches[1].GetTroopType() != match.GetAttackerType() {
+		t.Fatalf("world did not restore the battlefield formations and terrain: %v", restored)
+	}
+	if tileAt(restored, -1, 0).GetGarrisonType() != westBorder.GetOrder().GetTroopType() {
+		t.Fatalf("world did not restore a typed garrison: %v", tileAt(restored, -1, 0))
+	}
+	send(west, westBorder)
+	changedBorder := proto.CloneOf(westBorder)
+	changedBorder.Order.TroopType = pb.TroopType_TROOP_TYPE_CAVALRY
+	if got := world(west, changedBorder).GetResult(); got != pb.WorldResult_WORLD_RESULT_INVALID_ORDER {
+		t.Fatalf("durable command did not reject a different troop type: %v", got)
 	}
 	send(west, westSupport)
 	send(east, eastSupport)
@@ -330,6 +353,10 @@ func TestWorldCheckpointPreservesSubMillisecondArrivalOrder(t *testing.T) {
 	world, stop := start()
 	// 守方新的行军只生成一条事件。晚到的攻方援军和决胜交锋仍从检查点恢复。
 	east := world("east", nil).GetSnapshot()
+	if battles := east.GetBattles(); len(battles) != 1 || battles[0].GetRuleVersion() != 4 ||
+		battles[0].GetTerrain() != pb.BattlefieldTerrain_BATTLEFIELD_TERRAIN_FORD {
+		t.Fatalf("legacy battle did not recover the ford while keeping its combat rule: %v", battles)
+	}
 	order := knownWorld(east)
 	order.Order = &pb.MarchOrder{CommandId: "east-border", TargetTileId: tileAt(east, 1, 0).GetId(), Troops: 20}
 	if reply := world("east", order); reply.GetResult() != pb.WorldResult_WORLD_RESULT_OK {
